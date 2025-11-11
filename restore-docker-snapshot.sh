@@ -61,11 +61,29 @@ else
 
   if echo "$snapshot_type" | grep -qi "postgresql"; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
-    gunzip -c "$CHECKPOINT_DIR/db-postgresql.sql.gz" | PGPASSWORD="$jdbc_pass" psql -h localhost -p 5432 -U "$jdbc_user" -d "$dbname" >/dev/null
+    pghost=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://([^/:?]+).*$#\1#')
+    pgport=$(echo "$jdbc_url" | sed -nE 's#^jdbc:postgresql://[^/:?]+:([0-9]+).*$#\1#p')
+    [[ "$pghost" == "host.docker.internal" ]] && pghost="localhost"
+    [[ -z "$pghost" || "$pghost" == "$jdbc_url" ]] && pghost="localhost"
+    [[ -z "$pgport" ]] && pgport=5432
+
+    info_custom "${Yellow}Resetting PostgreSQL database:${Color_Off} $dbname"
+    PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$dbname' AND pid <> pg_backend_pid();" >/dev/null 2>&1
+    PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$dbname\";" >/dev/null
+    PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$dbname\" WITH TEMPLATE template0 ENCODING 'UTF8';" >/dev/null
+
+    info_custom "${Yellow}Importing PostgreSQL dump into:${Color_Off} $dbname"
+    gunzip -c "$CHECKPOINT_DIR/db-postgresql.sql.gz" | PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" >/dev/null
   else
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://[^/]+/([^?]+).*#\1#')
-    mysql -h localhost -P 3306 -u "$jdbc_user" -p"$jdbc_pass" -e "DROP DATABASE IF EXISTS \`$dbname\`; CREATE DATABASE \`$dbname\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >/dev/null
-    gunzip -c "$CHECKPOINT_DIR/db-mysql.sql.gz" | mysql -h localhost -P 3306 -u "$jdbc_user" -p"$jdbc_pass" >/dev/null
+    myhost=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://([^/:?]+).*$#\1#')
+    myport=$(echo "$jdbc_url" | sed -nE 's#^jdbc:mysql://[^/:?]+:([0-9]+).*$#\1#p')
+    [[ "$myhost" == "host.docker.internal" ]] && myhost="localhost"
+    [[ -z "$myhost" || "$myhost" == "$jdbc_url" ]] && myhost="localhost"
+    [[ -z "$myport" ]] && myport=3306
+
+    mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" -e "DROP DATABASE IF EXISTS \`$dbname\`; CREATE DATABASE \`$dbname\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >/dev/null
+    gunzip -c "$CHECKPOINT_DIR/db-mysql.sql.gz" | mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" >/dev/null
   fi
 
   if [[ -f "$CHECKPOINT_DIR/files.tar.gz" ]]; then
