@@ -41,6 +41,8 @@ timestamp=$(date +"%Y%m%d-%H%M%S")
 checkpoint_dir="$BACKUPS_DIR/$timestamp"
 mkdir -p "$checkpoint_dir"
 
+read_config "Snapshot Name (optional)" SNAPSHOT_NAME ""
+
 jdbc_url=""
 jdbc_user=""
 jdbc_pass=""
@@ -54,11 +56,13 @@ fi
 if [[ -z "$jdbc_url" ]]; then
   info "No JDBC configuration detected; creating filesystem snapshot"
   tar --exclude="$BACKUPS_DIR" -czf "$checkpoint_dir/filesystem.tar.gz" -C "$LIFERAY_ROOT" .
-  echo "type=hypersonic" > "$checkpoint_dir/meta"
+  printf "type=hypersonic\n" > "$checkpoint_dir/meta"
+  [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME" >> "$checkpoint_dir/meta"
 else
   echo "$jdbc_url" | grep -qi "postgresql" && dbtype="postgresql"
   echo "$jdbc_url" | grep -qi "mysql" && dbtype="${dbtype:-mysql}"
-  echo "type=$dbtype" > "$checkpoint_dir/meta"
+  printf "type=%s\n" "$dbtype" > "$checkpoint_dir/meta"
+  [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME" >> "$checkpoint_dir/meta"
 
   if [[ "$dbtype" == "postgresql" ]]; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
@@ -79,4 +83,8 @@ if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   docker start "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
-info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir"
+if [[ -n "$SNAPSHOT_NAME" ]]; then
+  info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir  ${BYellow}($SNAPSHOT_NAME)"
+else
+  info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir"
+fi

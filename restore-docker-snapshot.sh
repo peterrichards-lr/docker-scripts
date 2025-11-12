@@ -24,8 +24,43 @@ CX_VOLUME="$LIFERAY_ROOT/osgi/client-extensions"
 STATE_VOLUME="$LIFERAY_ROOT/osgi/state"
 BACKUPS_DIR="$LIFERAY_ROOT/backups"
 
-latest_checkpoint=$(ls -1 "$BACKUPS_DIR" 2>/dev/null | sort -r | head -n 1)
-read_config "Checkpoint folder name under backups" CHECKPOINT "$latest_checkpoint"
+CHECKPOINTS=()
+if [[ -d "$BACKUPS_DIR" ]]; then
+  IFS=$'\n' CHECKPOINTS=($(ls -1 "$BACKUPS_DIR" 2>/dev/null | sort -r))
+  unset IFS
+fi
+latest_checkpoint="${CHECKPOINTS[1]}"
+
+if [[ ${#CHECKPOINTS[@]} -eq 0 ]]; then
+  info_custom "${Yellow}No backups found in:${Color_Off} $BACKUPS_DIR"
+  exit 1
+fi
+
+read_config "Show list of available backups (Y/N)" SHOW_LIST "Y"
+if [[ "${SHOW_LIST:u}" == "Y" ]]; then
+  info_custom "${Yellow}Available backups for${Color_Off} $LIFERAY_ROOT/backups"
+  idx=1
+  for folder in "${CHECKPOINTS[@]}"; do
+    name_line=$(sed -n 's/^name=//p' "$BACKUPS_DIR/$folder/meta" 2>/dev/null | head -n1)
+    display_name=${name_line:-"(unnamed)"}
+    echo "  [$idx] $display_name — $folder"
+    idx=$((idx+1))
+  done
+fi
+
+read_config "Select backup by number or enter folder name" CHECKPOINT_INPUT "$latest_checkpoint"
+
+if [[ "$CHECKPOINT_INPUT" =~ ^[0-9]+$ ]]; then
+  sel=$((CHECKPOINT_INPUT))
+  if (( sel < 1 || sel > ${#CHECKPOINTS[@]} )); then
+    info_custom "${Yellow}Invalid selection:${Color_Off} $CHECKPOINT_INPUT"
+    exit 1
+  fi
+  CHECKPOINT="${CHECKPOINTS[$sel]}"
+else
+  CHECKPOINT="$CHECKPOINT_INPUT"
+fi
+
 CHECKPOINT_DIR="$BACKUPS_DIR/$CHECKPOINT"
 
 if [[ ! -d "$CHECKPOINT_DIR" ]]; then
