@@ -1,38 +1,170 @@
 #!/bin/zsh
 
+# Compatibility: macOS (zsh) and Linux. Avoids bash-only features.
+
 Color_Off='\033[0m'
 Green='\033[0;32m'
 Yellow='\033[0;33m'
 White='\033[0;37m'
 BYellow='\033[1;33m'
+Red='\033[0;31m'
+BRed='\033[1;31m'
 
-info() { [[ -n $* ]] && echo -e "${Yellow}$1${Color_Off}"; }
-info_custom() { [[ -n $* ]] && echo -e "$1${Color_Off}"; }
-read_config() { if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1 [${Green}$3${White}]: ${Color_Off}"; read -r ANSWER; eval "$2=${ANSWER:-$3}"; fi }
-
+# -----------------------------
+# Helpers
+# -----------------------------
+info() { [[ -n $* && "$QUIET" != 1 ]] && echo -e "${Yellow}$1${Color_Off}"; }
+info_custom() { [[ -n $* && "$QUIET" != 1 ]] && echo -e "$1${Color_Off}"; }
+error() { echo -e "${BRed}Error:${Color_Off} $*" 1>&2; }
+_die() { error "$*"; exit 1; }
+read_config() {
+  if [[ "$NON_INTERACTIVE" == 1 ]]; then
+    eval "$2=$3"
+    return
+  fi
+  if [[ -n $* ]]; then
+    local ANSWER
+    echo -n -e "${White}$1 [${Green}$3${White}]: ${Color_Off}"
+    read -r ANSWER
+    eval "$2=${ANSWER:-$3}"
+  fi
+}
 read_db_prop() { grep -E "^$1=" "$FILES_VOLUME/portal-ext.properties" | sed -e "s/^$1=//"; }
 
+# -----------------------------
+# Defaults
+# -----------------------------
 LIFERAY_ROOT_ARG=""
+SNAPSHOT_NAME_ARG=""
+NO_SNAPSHOT_NAME=""
+STOP_FLAG=""       # force stop
+NO_STOP_FLAG=""     # force do not stop
+NON_INTERACTIVE=0
+QUIET=0
+VERBOSE=0
+DB_ONLY=0
+FILES_ONLY=0
+COMPRESSION="gzip"  # gzip|xz|none
+PREFIX=""
+VERIFY=0
+BACKUPS_DIR_OVERRIDE=""
+CONTAINER_NAME_OVERRIDE=""
+PG_HOST_OVERRIDE=""
+PG_PORT_OVERRIDE=""
+MY_HOST_OVERRIDE=""
+MY_PORT_OVERRIDE=""
+RETENTION_N=""
+TAGS=()
+
+# -----------------------------
+# Parse arguments
+# -----------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -r|--root)
-      shift
-      if [[ -z "$1" ]]; then
-        echo "Error: --root requires a path"
-        exit 1
-      fi
-      LIFERAY_ROOT_ARG="$1"
-      ;;
+      shift; [[ -z "$1" ]] && _die "--root requires a path"
+      LIFERAY_ROOT_ARG="$1" ;;
+    -b|--backups-dir)
+      shift; [[ -z "$1" ]] && _die "--backups-dir requires a path"
+      BACKUPS_DIR_OVERRIDE="$1" ;;
+    -c|--container)
+      shift; [[ -z "$1" ]] && _die "--container requires a name"
+      CONTAINER_NAME_OVERRIDE="$1" ;;
+    --non-interactive)
+      NON_INTERACTIVE=1 ;;
+    --db-only)
+      DB_ONLY=1 ;;
+    --files-only)
+      FILES_ONLY=1 ;;
+    --compression)
+      shift; [[ -z "$1" ]] && _die "--compression requires a value"
+      case "$1" in gzip|xz|none) COMPRESSION="$1" ;; *) _die "--compression must be gzip|xz|none";; esac ;;
+    --prefix)
+      shift; [[ -z "$1" ]] && _die "--prefix requires a value"
+      PREFIX="$1" ;;
+    --verify)
+      VERIFY=1 ;;
+    --quiet)
+      QUIET=1 ;;
+    --verbose)
+      VERBOSE=1 ;;
+    --pg-host)
+      shift; [[ -z "$1" ]] && _die "--pg-host requires a value"
+      PG_HOST_OVERRIDE="$1" ;;
+    --pg-port)
+      shift; [[ -z "$1" ]] && _die "--pg-port requires a value"
+      PG_PORT_OVERRIDE="$1" ;;
+    --my-host)
+      shift; [[ -z "$1" ]] && _die "--my-host requires a value"
+      MY_HOST_OVERRIDE="$1" ;;
+    --my-port)
+      shift; [[ -z "$1" ]] && _die "--my-port requires a value"
+      MY_PORT_OVERRIDE="$1" ;;
+    --tag)
+      shift; [[ -z "$1" || "$1" != *"="* ]] && _die "--tag requires key=value"
+      TAGS+="$1" ;;
+    --retention)
+      shift; [[ -z "$1" || "$1" != <-> ]] && _die "--retention requires an integer"
+      RETENTION_N="$1" ;;
+    -n|--name)
+      shift; [[ -z "$1" ]] && _die "--name requires a value"
+      SNAPSHOT_NAME_ARG="$1" ;;
+    --no-name)
+      NO_SNAPSHOT_NAME=1 ;;
+    -s|--stop)
+      STOP_FLAG=1 ;;
+    --no-stop)
+      NO_STOP_FLAG=1 ;;
     -h|--help)
-      echo "Usage: $0 [-r|--root PATH]"
-      exit 0
-      ;;
-    *)
-      ;;
+      echo "Usage: $0 [options]";
+      echo "";
+      echo "Core paths and container:";
+      echo "  -r, --root <path>             Project root. Default: current directory (interactive prompt if not provided).";
+      echo "  -b, --backups-dir <path>      Backups directory. Default: <root>/backups";
+      echo "  -c, --container <name>        Override container name. Default: basename(<root>) with dots replaced by dashes";
+      echo "";
+      echo "Snapshot content and compression:";
+      echo "      --db-only / --files-only  Dump only DB or only filesystem. Default: both";
+      echo "      --compression gzip|xz|none  Compression for dumps and tar. Default: gzip";
+      echo "      --prefix <text>           Prefix for backup folder name (results in <prefix>-<timestamp>)";
+      echo "";
+      echo "Behavior and prompts:";
+      echo "  -s, --stop / --no-stop       Stop container during backup (and restart afterwards if it was running). Default: stop";
+      echo "      --non-interactive         Do not prompt; use defaults. In this mode:";
+      echo "                                • root defaults to current directory";
+      echo "                                • container is stopped by default (unless --no-stop is provided)";
+      echo "                                • snapshot name is empty unless --name is provided";
+      echo "                                • no prompts are shown (defaults are applied silently)";
+      echo "  -n, --name <text>            Optional snapshot name (stored in meta).";
+      echo "      --no-name                Skip the name prompt and store no name";
+      echo "";
+      echo "Database connection overrides (if dumping DB):";
+      echo "      --pg-host/--pg-port       Override PostgreSQL host/port. Defaults: parsed from JDBC URL; host.docker.internal -> localhost; port 5432 if missing";
+      echo "      --my-host/--my-port       Override MySQL host/port. Defaults: parsed from JDBC URL; host.docker.internal -> localhost; port 3306 if missing";
+      echo "";
+      echo "Metadata and retention:";
+      echo "      --tag key=value           Repeatable; stored in meta as tag.<key>=<value>";
+      echo "      --retention <N>           Keep only newest N backups (older ones pruned). If --prefix is set, pruning applies only to backups starting with that prefix";
+      echo "";
+      echo "Verification and logging:";
+      echo "      --verify                  Validate created archives (gzip/xz integrity, tar list)";
+      echo "      --quiet | --verbose       Adjust logging verbosity. Default: normal";
+      exit 0 ;;
+    *) _die "Unknown option: $1" ;;
   esac
   shift
 done
 
+[[ $VERBOSE -eq 1 ]] && set -x
+
+# Mutual exclusivity checks
+if [[ $DB_ONLY -eq 1 && $FILES_ONLY -eq 1 ]]; then
+  _die "--db-only and --files-only are mutually exclusive"
+fi
+
+# -----------------------------
+# Resolve paths and names
+# -----------------------------
 if [[ -n "$LIFERAY_ROOT_ARG" ]]; then
   LIFERAY_ROOT="$LIFERAY_ROOT_ARG"
 else
@@ -47,67 +179,199 @@ SCRIPT_VOLUME="$LIFERAY_ROOT/scripts"
 FILES_VOLUME="$LIFERAY_ROOT/files"
 CX_VOLUME="$LIFERAY_ROOT/osgi/client-extensions"
 STATE_VOLUME="$LIFERAY_ROOT/osgi/state"
-BACKUPS_DIR="$LIFERAY_ROOT/backups"
+BACKUPS_DIR="${BACKUPS_DIR_OVERRIDE:-$LIFERAY_ROOT/backups}"
 
 mkdir -p "$BACKUPS_DIR"
 
-CONTAINER_NAME=$(echo "$LIFERAY_ROOT" | sed -e 's:.*/::' -e 's/[\.]/-/g')
+# Container name
+if [[ -n "$CONTAINER_NAME_OVERRIDE" ]]; then
+  CONTAINER_NAME="$CONTAINER_NAME_OVERRIDE"
+else
+  CONTAINER_NAME=$(echo "$LIFERAY_ROOT" | sed -e 's:.*/::' -e 's/[\.]/-/g')
+fi
 container_running=$(docker ps --format '{{.Names}}' | grep -x "$CONTAINER_NAME" >/dev/null 2>&1 && echo "Y" || echo "N")
 
 STOP_CONTAINER_DEFAULT=Y
-read_config "Stop container during backup" STOP_CONTAINER "$STOP_CONTAINER_DEFAULT"
+if [[ -n "$STOP_FLAG" ]]; then
+  STOP_CONTAINER=Y
+elif [[ -n "$NO_STOP_FLAG" ]]; then
+  STOP_CONTAINER=N
+else
+  read_config "Stop container during backup" STOP_CONTAINER "$STOP_CONTAINER_DEFAULT"
+fi
 
 if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   info_custom "${Yellow}Stopping ${Green}$CONTAINER_NAME"
   docker stop "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
+# Timestamped checkpoint directory with optional prefix
 timestamp=$(date +"%Y%m%d-%H%M%S")
-checkpoint_dir="$BACKUPS_DIR/$timestamp"
+dir_name="$timestamp"
+[[ -n "$PREFIX" ]] && dir_name="$PREFIX-$dir_name"
+checkpoint_dir="$BACKUPS_DIR/$dir_name"
 mkdir -p "$checkpoint_dir"
 
-read_config "Snapshot Name (optional)" SNAPSHOT_NAME ""
+# Snapshot name (optional)
+if [[ -n "$SNAPSHOT_NAME_ARG" ]]; then
+  SNAPSHOT_NAME="$SNAPSHOT_NAME_ARG"
+elif [[ "$NO_SNAPSHOT_NAME" == 1 || "$NON_INTERACTIVE" == 1 ]]; then
+  SNAPSHOT_NAME=""
+else
+  read_config "Snapshot Name (optional)" SNAPSHOT_NAME ""
+fi
 
-jdbc_url=""
-jdbc_user=""
-jdbc_pass=""
+# Compression setup
+case "$COMPRESSION" in
+  gzip) TAR_FLAG=z; COMPRESS_EXT=".gz"; COMPRESS_CMD="gzip -c" ;;
+  xz)   TAR_FLAG=J; COMPRESS_EXT=".xz"; COMPRESS_CMD="xz -c" ;;
+  none) TAR_FLAG=""; COMPRESS_EXT="";  COMPRESS_CMD="cat" ;;
+esac
 
+# JDBC detection
+jdbc_url=""; jdbc_user=""; jdbc_pass=""
 if [[ -f "$FILES_VOLUME/portal-ext.properties" ]]; then
   jdbc_url=$(read_db_prop "jdbc.default.url")
   jdbc_user=$(read_db_prop "jdbc.default.username")
   jdbc_pass=$(read_db_prop "jdbc.default.password")
 fi
 
+# Write meta
 if [[ -z "$jdbc_url" ]]; then
-  info "No JDBC configuration detected; creating filesystem snapshot"
-  tar --exclude="$BACKUPS_DIR" -czf "$checkpoint_dir/filesystem.tar.gz" -C "$LIFERAY_ROOT" .
-  printf "type=hypersonic\n" > "$checkpoint_dir/meta"
-  [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME" >> "$checkpoint_dir/meta"
+  snap_type="hypersonic"
 else
-  echo "$jdbc_url" | grep -qi "postgresql" && dbtype="postgresql"
-  echo "$jdbc_url" | grep -qi "mysql" && dbtype="${dbtype:-mysql}"
-  printf "type=%s\n" "$dbtype" > "$checkpoint_dir/meta"
-  [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME" >> "$checkpoint_dir/meta"
+  echo "$jdbc_url" | grep -qi "postgresql" && snap_type="postgresql"
+  echo "$jdbc_url" | grep -qi "mysql" && snap_type="${snap_type:-mysql}"
+fi
+{
+  printf "type=%s\n" "$snap_type"
+  [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME"
+  # tags
+  for tag in "${TAGS[@]}"; do
+    key="${tag%%=*}"; val="${tag#*=}"
+    printf "tag.%s=%s\n" "$key" "$val"
+  done
+} > "$checkpoint_dir/meta"
 
-  if [[ "$dbtype" == "postgresql" ]]; then
+# -----------------------------
+# Database dump (if applicable)
+# -----------------------------
+if [[ $FILES_ONLY -eq 0 ]]; then
+  if [[ "$snap_type" == "postgresql" ]]; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
+    pghost="${PG_HOST_OVERRIDE:-localhost}"
+    pgport="${PG_PORT_OVERRIDE:-5432}"
+    [[ "$pghost" == "host.docker.internal" ]] && pghost="localhost"
+    dump_file="$checkpoint_dir/db-postgresql.sql$COMPRESS_EXT"
     info "Dumping PostgreSQL database: $dbname"
-    PGPASSWORD="$jdbc_pass" pg_dump -h localhost -p 5432 -U "$jdbc_user" -d "$dbname" | gzip > "$checkpoint_dir/db-postgresql.sql.gz"
-  else
+    if [[ $QUIET -eq 1 ]]; then
+      PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+    else
+      PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+    fi
+  elif [[ "$snap_type" == "mysql" ]]; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://[^/]+/([^?]+).*#\1#')
+    myhost="${MY_HOST_OVERRIDE:-localhost}"
+    myport="${MY_PORT_OVERRIDE:-3306}"
+    [[ "$myhost" == "host.docker.internal" ]] && myhost="localhost"
+    dump_file="$checkpoint_dir/db-mysql.sql$COMPRESS_EXT"
     info "Dumping MySQL database: $dbname"
-    mysqldump -h localhost -P 3306 -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | gzip > "$checkpoint_dir/db-mysql.sql.gz"
+    if [[ $QUIET -eq 1 ]]; then
+      mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+    else
+      mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+    fi
+  else
+    if [[ $DB_ONLY -eq 1 ]]; then
+      info_custom "${Yellow}No JDBC config detected; skipping DB dump (db-only requested).${Color_Off}"
+    fi
   fi
-
-  info "Archiving Liferay volumes"
-  tar -czf "$checkpoint_dir/files.tar.gz" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
 fi
 
+# -----------------------------
+# Filesystem archive
+# -----------------------------
+if [[ $DB_ONLY -eq 0 ]]; then
+  info "Archiving Liferay volumes"
+  files_archive="$checkpoint_dir/files.tar${COMPRESS_EXT}"
+  # Build tar command with conditional compression flag
+  if [[ -n "$TAR_FLAG" ]]; then
+    # compressed
+    if [[ $QUIET -eq 1 ]]; then
+      tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+    else
+      tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+    fi
+  else
+    # no compression
+    if [[ $QUIET -eq 1 ]]; then
+      tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+    else
+      tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+    fi
+  fi
+fi
+
+# -----------------------------
+# Verify
+# -----------------------------
+if [[ $VERIFY -eq 1 ]]; then
+  info "Verifying snapshot integrity"
+  # Verify DB dump
+  if ls "$checkpoint_dir"/db-*.sql* >/dev/null 2>&1; then
+    for f in "$checkpoint_dir"/db-*.sql*; do
+      case "$f" in
+        *.gz)  gzip -t "$f" || _die "Verification failed: $f" ;;
+        *.xz)  xz -t "$f" || _die "Verification failed: $f" ;;
+        *.sql) [[ -s "$f" ]] || _die "Verification failed (empty): $f" ;;
+      esac
+    done
+  fi
+  # Verify files tar
+  if ls "$checkpoint_dir"/files.tar* >/dev/null 2>&1; then
+    if [[ "$COMPRESSION" == "none" ]]; then
+      tar -tf "$checkpoint_dir/files.tar" >/dev/null || _die "Verification failed: files.tar"
+    else
+      # listing works through tar regardless of compression flag
+      tar -tf "$checkpoint_dir/files.tar${COMPRESS_EXT}" >/dev/null || _die "Verification failed: files.tar${COMPRESS_EXT}"
+    fi
+  fi
+fi
+
+# -----------------------------
+# Restart container if needed
+# -----------------------------
 if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   info_custom "${Yellow}Starting ${Green}$CONTAINER_NAME"
   docker start "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
+# -----------------------------
+# Retention pruning
+# -----------------------------
+if [[ -n "$RETENTION_N" ]]; then
+  info "Pruning backups to keep newest $RETENTION_N"
+  if [[ -d "$BACKUPS_DIR" ]]; then
+    # Newest first
+    IFS=$'\n' all_bks=($(ls -1 "$BACKUPS_DIR" 2>/dev/null | sort -r))
+    unset IFS
+    kept=0
+    for d in "${all_bks[@]}"; do
+      # If a prefix is specified, only consider those starting with it
+      if [[ -n "$PREFIX" && "$d" != "$PREFIX"-* ]]; then
+        continue
+      fi
+      kept=$((kept+1))
+      if (( kept > RETENTION_N )); then
+        rm -rf "$BACKUPS_DIR/$d"
+      fi
+    done
+  fi
+fi
+
+# -----------------------------
+# Done
+# -----------------------------
 if [[ -n "$SNAPSHOT_NAME" ]]; then
   info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir  ${BYellow}($SNAPSHOT_NAME)"
 else
