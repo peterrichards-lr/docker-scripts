@@ -1,6 +1,5 @@
 #!/bin/zsh
 
-# Compatibility: macOS (zsh) and Linux. Avoids bash-only features.
 
 Color_Off='\033[0m'
 Green='\033[0;32m'
@@ -10,9 +9,6 @@ BYellow='\033[1;33m'
 Red='\033[0;31m'
 BRed='\033[1;31m'
 
-# -----------------------------
-# Helpers
-# -----------------------------
 info() { [[ -n $* && "$QUIET" != 1 ]] && echo -e "${Yellow}$1${Color_Off}"; }
 info_custom() { [[ -n $* && "$QUIET" != 1 ]] && echo -e "$1${Color_Off}"; }
 error() { echo -e "${BRed}Error:${Color_Off} $*" 1>&2; }
@@ -31,20 +27,17 @@ read_config() {
 }
 read_db_prop() { grep -E "^$1=" "$FILES_VOLUME/portal-ext.properties" | sed -e "s/^$1=//"; }
 
-# -----------------------------
-# Defaults
-# -----------------------------
 LIFERAY_ROOT_ARG=""
 SNAPSHOT_NAME_ARG=""
 NO_SNAPSHOT_NAME=""
-STOP_FLAG=""       # force stop
-NO_STOP_FLAG=""     # force do not stop
+STOP_FLAG=""
+NO_STOP_FLAG=""
 NON_INTERACTIVE=0
 QUIET=0
 VERBOSE=0
 DB_ONLY=0
 FILES_ONLY=0
-COMPRESSION="gzip"  # gzip|xz|none
+COMPRESSION="gzip"
 PREFIX=""
 VERIFY=0
 BACKUPS_DIR_OVERRIDE=""
@@ -55,10 +48,8 @@ MY_HOST_OVERRIDE=""
 MY_PORT_OVERRIDE=""
 RETENTION_N=""
 TAGS=()
+BACKUP_FORMAT="standard"
 
-# -----------------------------
-# Parse arguments
-# -----------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -r|--root)
@@ -106,6 +97,10 @@ while [[ $# -gt 0 ]]; do
     --retention)
       shift; [[ -z "$1" || "$1" != <-> ]] && _die "--retention requires an integer"
       RETENTION_N="$1" ;;
+    --format)
+      shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"; case "$1" in standard|liferay-cloud) BACKUP_FORMAT="$1" ;; *) _die "--format must be standard|liferay-cloud";; esac ;;
+    --cloud)
+      BACKUP_FORMAT="liferay-cloud" ;;
     -n|--name)
       shift; [[ -z "$1" ]] && _die "--name requires a value"
       SNAPSHOT_NAME_ARG="$1" ;;
@@ -127,6 +122,8 @@ while [[ $# -gt 0 ]]; do
       echo "      --db-only / --files-only  Dump only DB or only filesystem. Default: both";
       echo "      --compression gzip|xz|none  Compression for dumps and tar. Default: gzip";
       echo "      --prefix <text>           Prefix for backup folder name (results in <prefix>-<timestamp>)";
+      echo "      --format standard|liferay-cloud  Backup layout. Default: standard";
+      echo "                                • liferay-cloud: database dump in <backup>/database/dump.sql.gz, and uncompressed doc library copied to <backup>/doclib";
       echo "";
       echo "Behavior and prompts:";
       echo "  -s, --stop / --no-stop       Stop container during backup (and restart afterwards if it was running). Default: stop";
@@ -157,14 +154,10 @@ done
 
 [[ $VERBOSE -eq 1 ]] && set -x
 
-# Mutual exclusivity checks
 if [[ $DB_ONLY -eq 1 && $FILES_ONLY -eq 1 ]]; then
   _die "--db-only and --files-only are mutually exclusive"
 fi
 
-# -----------------------------
-# Resolve paths and names
-# -----------------------------
 if [[ -n "$LIFERAY_ROOT_ARG" ]]; then
   LIFERAY_ROOT="$LIFERAY_ROOT_ARG"
 else
@@ -183,7 +176,6 @@ BACKUPS_DIR="${BACKUPS_DIR_OVERRIDE:-$LIFERAY_ROOT/backups}"
 
 mkdir -p "$BACKUPS_DIR"
 
-# Container name
 if [[ -n "$CONTAINER_NAME_OVERRIDE" ]]; then
   CONTAINER_NAME="$CONTAINER_NAME_OVERRIDE"
 else
@@ -205,14 +197,12 @@ if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   docker stop "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
-# Timestamped checkpoint directory with optional prefix
 timestamp=$(date +"%Y%m%d-%H%M%S")
 dir_name="$timestamp"
 [[ -n "$PREFIX" ]] && dir_name="$PREFIX-$dir_name"
 checkpoint_dir="$BACKUPS_DIR/$dir_name"
 mkdir -p "$checkpoint_dir"
 
-# Snapshot name (optional)
 if [[ -n "$SNAPSHOT_NAME_ARG" ]]; then
   SNAPSHOT_NAME="$SNAPSHOT_NAME_ARG"
 elif [[ "$NO_SNAPSHOT_NAME" == 1 || "$NON_INTERACTIVE" == 1 ]]; then
@@ -221,14 +211,12 @@ else
   read_config "Snapshot Name (optional)" SNAPSHOT_NAME ""
 fi
 
-# Compression setup
 case "$COMPRESSION" in
   gzip) TAR_FLAG=z; COMPRESS_EXT=".gz"; COMPRESS_CMD="gzip -c" ;;
   xz)   TAR_FLAG=J; COMPRESS_EXT=".xz"; COMPRESS_CMD="xz -c" ;;
   none) TAR_FLAG=""; COMPRESS_EXT="";  COMPRESS_CMD="cat" ;;
 esac
 
-# JDBC detection
 jdbc_url=""; jdbc_user=""; jdbc_pass=""
 if [[ -f "$FILES_VOLUME/portal-ext.properties" ]]; then
   jdbc_url=$(read_db_prop "jdbc.default.url")
@@ -236,50 +224,73 @@ if [[ -f "$FILES_VOLUME/portal-ext.properties" ]]; then
   jdbc_pass=$(read_db_prop "jdbc.default.password")
 fi
 
-# Write meta
 if [[ -z "$jdbc_url" ]]; then
   snap_type="hypersonic"
 else
   echo "$jdbc_url" | grep -qi "postgresql" && snap_type="postgresql"
   echo "$jdbc_url" | grep -qi "mysql" && snap_type="${snap_type:-mysql}"
 fi
+
+if [[ "$BACKUP_FORMAT" == "liferay-cloud" && "$snap_type" == "hypersonic" ]]; then
+  _die "Liferay Cloud format requires PostgreSQL or MySQL; Hypersonic is not supported"
+fi
+
 {
   printf "type=%s\n" "$snap_type"
+  printf "format=%s\n" "$BACKUP_FORMAT"
   [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME"
-  # tags
   for tag in "${TAGS[@]}"; do
     key="${tag%%=*}"; val="${tag#*=}"
     printf "tag.%s=%s\n" "$key" "$val"
   done
 } > "$checkpoint_dir/meta"
 
-# -----------------------------
-# Database dump (if applicable)
-# -----------------------------
 if [[ $FILES_ONLY -eq 0 ]]; then
   if [[ "$snap_type" == "postgresql" ]]; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
     pghost="${PG_HOST_OVERRIDE:-localhost}"
     pgport="${PG_PORT_OVERRIDE:-5432}"
     [[ "$pghost" == "host.docker.internal" ]] && pghost="localhost"
-    dump_file="$checkpoint_dir/db-postgresql.sql$COMPRESS_EXT"
-    info "Dumping PostgreSQL database: $dbname"
-    if [[ $QUIET -eq 1 ]]; then
-      PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+    if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
+      mkdir -p "$checkpoint_dir/database"
+      dump_file="$checkpoint_dir/database/dump.sql.gz"
+      info "Dumping PostgreSQL database: $dbname"
+      if [[ $QUIET -eq 1 ]]; then
+        PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" -F p --no-owner --no-privileges | gzip -c > "$dump_file" 2>/dev/null
+      else
+        PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" -F p --no-owner --no-privileges | gzip -c > "$dump_file"
+      fi
     else
-      PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+      dump_file="$checkpoint_dir/db-postgresql.sql$COMPRESS_EXT"
+      info "Dumping PostgreSQL database: $dbname"
+      if [[ $QUIET -eq 1 ]]; then
+        PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+      else
+        PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+      fi
     fi
   elif [[ "$snap_type" == "mysql" ]]; then
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://[^/]+/([^?]+).*#\1#')
     myhost="${MY_HOST_OVERRIDE:-localhost}"
     myport="${MY_PORT_OVERRIDE:-3306}"
     [[ "$myhost" == "host.docker.internal" ]] && myhost="localhost"
-    dump_file="$checkpoint_dir/db-mysql.sql$COMPRESS_EXT"
-    info "Dumping MySQL database: $dbname"
-    if [[ $QUIET -eq 1 ]]; then
-      mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+    if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
+      mkdir -p "$checkpoint_dir/database"
+      dump_file="$checkpoint_dir/database/dump.sql.gz"
+      info "Dumping MySQL database: $dbname"
+      if [[ $QUIET -eq 1 ]]; then
+        mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | gzip -c > "$dump_file" 2>/dev/null
+      else
+        mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | gzip -c > "$dump_file"
+      fi
     else
-      mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+      dump_file="$checkpoint_dir/db-mysql.sql$COMPRESS_EXT"
+      info "Dumping MySQL database: $dbname"
+      if [[ $QUIET -eq 1 ]]; then
+        mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
+      else
+        mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file"
+      fi
     fi
   else
     if [[ $DB_ONLY -eq 1 ]]; then
@@ -288,76 +299,72 @@ if [[ $FILES_ONLY -eq 0 ]]; then
   fi
 fi
 
-# -----------------------------
-# Filesystem archive
-# -----------------------------
 if [[ $DB_ONLY -eq 0 ]]; then
-  info "Archiving Liferay volumes"
-  files_archive="$checkpoint_dir/files.tar${COMPRESS_EXT}"
-  # Build tar command with conditional compression flag
-  if [[ -n "$TAR_FLAG" ]]; then
-    # compressed
-    if [[ $QUIET -eq 1 ]]; then
-      tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
-    else
-      tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+  if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
+    src_dir="$LIFERAY_ROOT/data/document_library"
+    dest_dir="$checkpoint_dir/doclib"
+    mkdir -p "$dest_dir"
+    if [[ -d "$src_dir" ]]; then
+      cp -R "$src_dir"/. "$dest_dir"/ 2>/dev/null || true
     fi
   else
-    # no compression
-    if [[ $QUIET -eq 1 ]]; then
-      tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+    info "Archiving Liferay volumes"
+    files_archive="$checkpoint_dir/files.tar${COMPRESS_EXT}"
+    if [[ -n "$TAR_FLAG" ]]; then
+      if [[ $QUIET -eq 1 ]]; then
+        tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+      else
+        tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+      fi
     else
-      tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+      if [[ $QUIET -eq 1 ]]; then
+        tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+      else
+        tar -cf "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
+      fi
     fi
   fi
 fi
 
-# -----------------------------
-# Verify
-# -----------------------------
 if [[ $VERIFY -eq 1 ]]; then
   info "Verifying snapshot integrity"
-  # Verify DB dump
-  if ls "$checkpoint_dir"/db-*.sql* >/dev/null 2>&1; then
-    for f in "$checkpoint_dir"/db-*.sql*; do
-      case "$f" in
-        *.gz)  gzip -t "$f" || _die "Verification failed: $f" ;;
-        *.xz)  xz -t "$f" || _die "Verification failed: $f" ;;
-        *.sql) [[ -s "$f" ]] || _die "Verification failed (empty): $f" ;;
-      esac
-    done
-  fi
-  # Verify files tar
-  if ls "$checkpoint_dir"/files.tar* >/dev/null 2>&1; then
-    if [[ "$COMPRESSION" == "none" ]]; then
-      tar -tf "$checkpoint_dir/files.tar" >/dev/null || _die "Verification failed: files.tar"
-    else
-      # listing works through tar regardless of compression flag
-      tar -tf "$checkpoint_dir/files.tar${COMPRESS_EXT}" >/dev/null || _die "Verification failed: files.tar${COMPRESS_EXT}"
+  if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
+    if [[ -f "$checkpoint_dir/database/dump.sql.gz" ]]; then
+      gzip -t "$checkpoint_dir/database/dump.sql.gz" || _die "Verification failed: database/dump.sql.gz"
+    fi
+    [[ -d "$checkpoint_dir/doclib" ]] || _die "Verification failed: doclib folder missing"
+  else
+    if ls "$checkpoint_dir"/db-*.sql* >/dev/null 2>&1; then
+      for f in "$checkpoint_dir"/db-*.sql*; do
+        case "$f" in
+          *.gz)  gzip -t "$f" || _die "Verification failed: $f" ;;
+          *.xz)  xz -t "$f" || _die "Verification failed: $f" ;;
+          *.sql) [[ -s "$f" ]] || _die "Verification failed (empty): $f" ;;
+        esac
+      done
+    fi
+    if ls "$checkpoint_dir"/files.tar* >/dev/null 2>&1; then
+      if [[ "$COMPRESSION" == "none" ]]; then
+        tar -tf "$checkpoint_dir/files.tar" >/dev/null || _die "Verification failed: files.tar"
+      else
+        tar -tf "$checkpoint_dir/files.tar${COMPRESS_EXT}" >/dev/null || _die "Verification failed: files.tar${COMPRESS_EXT}"
+      fi
     fi
   fi
 fi
 
-# -----------------------------
-# Restart container if needed
-# -----------------------------
 if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   info_custom "${Yellow}Starting ${Green}$CONTAINER_NAME"
   docker start "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
-# -----------------------------
-# Retention pruning
-# -----------------------------
 if [[ -n "$RETENTION_N" ]]; then
   info "Pruning backups to keep newest $RETENTION_N"
   if [[ -d "$BACKUPS_DIR" ]]; then
-    # Newest first
     IFS=$'\n' all_bks=($(ls -1 "$BACKUPS_DIR" 2>/dev/null | sort -r))
     unset IFS
     kept=0
     for d in "${all_bks[@]}"; do
-      # If a prefix is specified, only consider those starting with it
       if [[ -n "$PREFIX" && "$d" != "$PREFIX"-* ]]; then
         continue
       fi
@@ -369,9 +376,6 @@ if [[ -n "$RETENTION_N" ]]; then
   fi
 fi
 
-# -----------------------------
-# Done
-# -----------------------------
 if [[ -n "$SNAPSHOT_NAME" ]]; then
   info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir  ${BYellow}($SNAPSHOT_NAME)"
 else

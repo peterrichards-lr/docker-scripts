@@ -47,7 +47,7 @@ chmod +x *.sh
 
 ### create-docker-snapshot.sh
 
-Creates a timestamped snapshot of a **Liferay** environment created by `run-liferay-portal-docker.sh` or `run-liferay-dxp-docker.sh` (database + files), using the standard folder structure these scripts generate.
+Creates a timestamped snapshot of a **Liferay** environment (database + files), compatible with both local and Liferay Cloud (PaaS) formats. It works with environments created by `run-liferay-portal-docker.sh` or `run-liferay-dxp-docker.sh`.
 
 **Usage:**
 
@@ -67,6 +67,7 @@ Creates a timestamped snapshot of a **Liferay** environment created by `run-life
 | `--db-only` / `--files-only` | Dump only DB or only filesystem | both |
 | `--compression gzip|xz|none` | Compression used for DB dumps and tar | `gzip` |
 | `--prefix <text>` | Prefix added to snapshot folder name | none |
+| `--format standard|liferay-cloud` | Backup layout. If `liferay-cloud`, stores only `doclib/` (uncompressed) and `database/dump.sql.gz` with no owner or privilege statements | `standard` |
 | `--verify` | Validate created archives (gzip/xz integrity, tar list) | off |
 | `--retention <N>` | Keep only newest N backups (older pruned; if `--prefix` is set, pruning applies to that prefix only) | unlimited |
 | `-s, --stop` / `--no-stop` | Stop container during snapshot and restart after if it was running | stop |
@@ -78,25 +79,24 @@ Creates a timestamped snapshot of a **Liferay** environment created by `run-life
 
 **What gets created**
 
-A new folder under `<backups>/` named:
+Depending on your selected format:
 
-```
-[prefix-]YYYYMMDD-HHMMSS/
-```
+**Standard format (default):**
+- `meta` — text file with backup metadata
+- If PostgreSQL: `db-postgresql.sql.gz`
+- If MySQL: `db-mysql.sql.gz`
+- Filesystem archive: `files.tar.gz` (contains `files/`, `scripts/`, `osgi/`, `data/`, `deploy/`)
 
-Inside it, depending on your environment:
-
-- `meta` — text file with lines like `type=postgresql`, optional `name=Your label`, and any `tag.<key>=<value>` pairs
-- If PostgreSQL: `db-postgresql.sql.gz` (or `.xz` / no extension if `--compression none`)
-- If MySQL: `db-mysql.sql.gz` (or `.xz` / no extension)
-- If Hypersonic (no JDBC): `filesystem.tar.gz` (or `.xz` / no extension)
-- Filesystem archive: `files.tar.gz` (or `.xz` / no extension) containing `files/`, `scripts/`, `osgi/`, `data/`, and `deploy/`
+**Liferay Cloud format:**
+- `meta` — includes `format=liferay-cloud`
+- `database/dump.sql.gz` — plain SQL dump (no owner/privilege statements)
+- `doclib/` — copy of the `data/document_library` directory (uncompressed)
 
 ---
 
 ### restore-docker-snapshot.sh
 
-Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Liferay** project root (as produced by `run-liferay-portal-docker.sh` or `run-liferay-dxp-docker.sh`).
+Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Liferay** project root. Supports both standard and Liferay Cloud backups. For Cloud backups, only the `database` and `doclib` content are restored automatically; other files must be applied manually.
 
 **Usage:**
 
@@ -118,8 +118,18 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--delete-after` / `--keep-checkpoint` | Delete checkpoint after successful restore or keep it | keep |
 | `--pg-host/--pg-port` | Override PostgreSQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 5432 |
 | `--my-host/--my-port` | Override MySQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 3306 |
+| `--format standard|liferay-cloud` | Force interpret backup layout; normally auto-detected | auto-detected |
 | `--non-interactive` | No prompts; defaults applied | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |
+
+---
+
+### Liferay Cloud Compatibility
+
+When restoring a Liferay Cloud-format backup:
+- Only `database/dump.sql.gz` and `doclib/` are applied.
+- Configuration, OSGi state, and scripts must be restored manually.
+- Cloud backups are only supported for PostgreSQL and MySQL databases.
 
 ---
 
@@ -193,6 +203,7 @@ All scripts support non-interactive mode. When `--non-interactive` is used:
 - `--root` defaults to the current directory.
 - For `create-docker-snapshot.sh`: container is stopped by default (unless `--no-stop`), compression defaults to `gzip`, snapshot folder is `[prefix-]YYYYMMDD-HHMMSS/` under `<root>/backups`, and newest-only retention is applied only if `--retention` is provided.
 - For `restore-docker-snapshot.sh`: the newest backup under `<root>/backups` is chosen automatically unless `--index` or `--checkpoint` is provided; container is stopped by default (unless `--no-stop`); checkpoint is kept by default (unless `--delete-after`).
+- `--format` defaults to `standard` unless explicitly set.
 
 When used outside of the Liferay project layout produced by the run scripts, pass `--root` to point at a compatible folder structure.
 

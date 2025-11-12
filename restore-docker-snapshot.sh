@@ -221,6 +221,18 @@ if [[ -z "$snapshot_type" ]]; then
   else snapshot_type="hypersonic"; fi
 fi
 
+snapshot_format="standard"
+if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
+  fmt_line=$(sed -n 's/^format=//p' "$CHECKPOINT_DIR/meta" | head -n1)
+  [[ -n "$fmt_line" ]] && snapshot_format="$fmt_line"
+fi
+if [[ -d "$CHECKPOINT_DIR/database" || -d "$CHECKPOINT_DIR/doclib" ]]; then
+  snapshot_format="liferay-cloud"
+fi
+if [[ "$snapshot_format" == "liferay-cloud" && "$snapshot_type" == "hypersonic" ]]; then
+  _die "Liferay Cloud backups require PostgreSQL or MySQL; Hypersonic is not supported"
+fi
+
 _decompress_cmd() {
   case "$1" in
     *.gz) echo "gunzip -c" ;;
@@ -250,8 +262,12 @@ else
   jdbc_pass=$(read_db_prop "jdbc.default.password")
 
   if echo "$snapshot_type" | grep -qi "postgresql"; then
-    dump_file="$postgres_dump"
-    [[ -z "$dump_file" ]] && _die "PostgreSQL dump not found in $CHECKPOINT_DIR"
+    if [[ "$snapshot_format" == "liferay-cloud" ]]; then
+      dump_file="$CHECKPOINT_DIR/database/dump.sql.gz"
+    else
+      dump_file="$postgres_dump"
+    fi
+    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "PostgreSQL dump not found in $CHECKPOINT_DIR"
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
     pghost="${PG_HOST_OVERRIDE:-$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://([^/:?]+).*$#\1#')}"
     pgport="${PG_PORT_OVERRIDE:-$(echo "$jdbc_url" | sed -nE 's#^jdbc:postgresql://[^/:?]+:([0-9]+).*$#\1#p')}"
@@ -265,11 +281,19 @@ else
     PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$dbname\" WITH TEMPLATE template0 ENCODING 'UTF8';" >/dev/null
 
     info_custom "${Yellow}Importing PostgreSQL dump into:${Color_Off} $dbname"
-    DECOMP=$(_decompress_cmd "$dump_file")
-    eval "$DECOMP" "$dump_file" | PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" >/dev/null
+    if [[ "$snapshot_format" == "liferay-cloud" ]]; then
+      gunzip -c "$dump_file" | PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" >/dev/null
+    else
+      DECOMP=$(_decompress_cmd "$dump_file")
+      eval "$DECOMP" "$dump_file" | PGPASSWORD="$jdbc_pass" psql -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" >/dev/null
+    fi
   else
-    dump_file="$mysql_dump"
-    [[ -z "$dump_file" ]] && _die "MySQL dump not found in $CHECKPOINT_DIR"
+    if [[ "$snapshot_format" == "liferay-cloud" ]]; then
+      dump_file="$CHECKPOINT_DIR/database/dump.sql.gz"
+    else
+      dump_file="$mysql_dump"
+    fi
+    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "MySQL dump not found in $CHECKPOINT_DIR"
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://[^/]+/([^?]+).*#\1#')
     myhost="${MY_HOST_OVERRIDE:-$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://([^/:?]+).*$#\1#')}"
     myport="${MY_PORT_OVERRIDE:-$(echo "$jdbc_url" | sed -nE 's#^jdbc:mysql://[^/:?]+:([0-9]+).*$#\1#p')}"
@@ -279,13 +303,28 @@ else
 
     mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" -e "DROP DATABASE IF EXISTS \`$dbname\`; CREATE DATABASE \`$dbname\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >/dev/null
     info_custom "${Yellow}Importing MySQL dump into:${Color_Off} $dbname"
-    DECOMP=$(_decompress_cmd "$dump_file")
-    eval "$DECOMP" "$dump_file" | mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" >/dev/null
+    if [[ "$snapshot_format" == "liferay-cloud" ]]; then
+      gunzip -c "$dump_file" | mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" >/dev/null
+    else
+      DECOMP=$(_decompress_cmd "$dump_file")
+      eval "$DECOMP" "$dump_file" | mysql -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" >/dev/null
+    fi
   fi
 
-  if files_archive=$(ls -1 "$CHECKPOINT_DIR"/files.tar.* 2>/dev/null | head -n1); then
-    info "Restoring files archive"
-    _tar_extract "$files_archive" "$LIFERAY_ROOT"
+  if [[ "$snapshot_format" == "liferay-cloud" ]]; then
+    info_custom "${Yellow}Applying Liferay Cloud backup:${Color_Off} database and doclib only. Other files (configs, scripts, OSGi state) are not applied automatically."
+    src_doclib="$CHECKPOINT_DIR/doclib"
+    dest_doclib="$LIFERAY_ROOT/data/document_library"
+    if [[ -d "$src_doclib" ]]; then
+      mkdir -p "$dest_doclib"
+      rm -rf "$dest_doclib"/* 2>/dev/null
+      cp -R "$src_doclib"/. "$dest_doclib"/ 2>/dev/null
+    fi
+  else
+    if files_archive=$(ls -1 "$CHECKPOINT_DIR"/files.tar.* 2>/dev/null | head -n1); then
+      info "Restoring files archive"
+      _tar_extract "$files_archive" "$LIFERAY_ROOT"
+    fi
   fi
 fi
 
