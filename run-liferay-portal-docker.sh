@@ -13,16 +13,16 @@ info_custom() { [[ -n $* ]] && echo -e "$1${Color_Off}"; }
 error() { echo -e "${BRed}Error:${Color_Off} $*" 1>&2; }
 _die() { error "$*"; exit 1; }
 read_config() {
-  if [[ "$NON_INTERACTIVE" == 1 ]]; then eval "$2=$3"; return; fi
-  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1 [${Green}$3${White}]: ${Color_Off}"; read -r ANSWER; eval "$2=${ANSWER:-$3}"; fi
+  if [[ "$NON_INTERACTIVE" == 1 ]]; then typeset -g "$2"="$3"; return; fi
+  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1 [${Green}$3${White}]: ${Color_Off}"; read -r ANSWER; typeset -g "$2"="${ANSWER:-$3}"; fi
 }
 read_input() {
-  if [[ "$NON_INTERACTIVE" == 1 ]]; then eval "$2=$3"; return; fi
-  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1: ${Color_Off}"; read -r ANSWER; eval "$2=${ANSWER}"; fi
+  if [[ "$NON_INTERACTIVE" == 1 ]]; then typeset -g "$2"="$3"; return; fi
+  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1: ${Color_Off}"; read -r ANSWER; typeset -g "$2"="${ANSWER}"; fi
 }
 read_password() {
-  if [[ "$NON_INTERACTIVE" == 1 ]]; then eval "$2=$3"; return; fi
-  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1: ${Color_Off}"; read -rs ANSWER; echo -e ""; eval "$2=${ANSWER}"; fi
+  if [[ "$NON_INTERACTIVE" == 1 ]]; then typeset -g "$2"="$3"; return; fi
+  if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1: ${Color_Off}"; read -rs ANSWER; echo -e ""; typeset -g "$2"="${ANSWER}"; fi
 }
 
 IMAGE_NAME=liferay/dxp
@@ -212,7 +212,7 @@ if [ $? -eq 1 ]; then
   if [[ "${DISABLE_ZIP64_EXTRA_FIELD_VALIDATION:u}" == "Y" ]]; then ZIP64_FLAG="-e LIFERAY_JVM_OPTS=-Djdk.util.zip.disableZip64ExtraFieldValidation=true"; fi
   if [[ "${USE_HOST_NETWORK:u}" == "Y" ]]; then NETWORK_HOST=--network=host; fi
   info_custom "${Yellow}Creating ${BYellow}$CONTAINER_NAME ${Yellow}with ${BYellow}$IMAGE_TAG"
-  docker pull "$IMAGE_TAG" | grep "Status: " | awk 'NF>1{print $NF}' | xargs -I{} docker create -it ${NETWORK_HOST} --name ${CONTAINER_NAME} -p ${LOCAL_PORT}:8080 ${ZIP64_FLAG} -v ${FILES_VOLUME}:/mnt/liferay/files -v ${SCRIPT_VOLUME}:/mnt/liferay/scripts -v ${OSGI_STATE_VOLUME}:/opt/liferay/osgi/state -v ${OSGI_CONFIGS_VOLUME}:/opt/liferay/osgi/configs -v ${DATA_VOLUME}:/opt/liferay/data -v ${DEPLOY_VOLUME}:/mnt/liferay/deploy -v ${CX_VOLUME}:/opt/liferay/osgi/client-extensions {}
+  docker pull "$IMAGE_TAG" | grep "Status: " | awk 'NF>1{print $NF}' | xargs -I{} docker create -it ${NETWORK_HOST} --name "${CONTAINER_NAME}" -p ${LOCAL_PORT}:8080 ${ZIP64_FLAG} -v "${FILES_VOLUME}:/mnt/liferay/files" -v "${SCRIPT_VOLUME}:/mnt/liferay/scripts" -v "${OSGI_STATE_VOLUME}:/opt/liferay/osgi/state" -v "${OSGI_CONFIGS_VOLUME}:/opt/liferay/osgi/configs" -v "${DATA_VOLUME}:/opt/liferay/data" -v "${DEPLOY_VOLUME}:/mnt/liferay/deploy" -v "${CX_VOLUME}:/opt/liferay/osgi/client-extensions" {}
   docker start -i -a "${CONTAINER_NAME}"
   if [[ "${REMOVE_CONTAINER:u}" == "Y" ]]; then
     info_custom "\n${Yellow}Deleting ${Green}$CONTAINER_NAME"

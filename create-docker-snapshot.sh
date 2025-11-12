@@ -15,14 +15,14 @@ error() { echo -e "${BRed}Error:${Color_Off} $*" 1>&2; }
 _die() { error "$*"; exit 1; }
 read_config() {
   if [[ "$NON_INTERACTIVE" == 1 ]]; then
-    eval "$2=$3"
+    typeset -g "$2"="$3"
     return
   fi
   if [[ -n $* ]]; then
     local ANSWER
     echo -n -e "${White}$1 [${Green}$3${White}]: ${Color_Off}"
     read -r ANSWER
-    eval "$2=${ANSWER:-$3}"
+    typeset -g "$2"="${ANSWER:-$3}"
   fi
 }
 read_db_prop() { grep -E "^$1=" "$FILES_VOLUME/portal-ext.properties" | sed -e "s/^$1=//"; }
