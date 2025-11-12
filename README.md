@@ -76,7 +76,7 @@ cd docker-scripts
 ./create-docker-snapshot.sh
 
 # Example: Restore a Docker snapshot
-./restore-docker-snapshot.sh
+./restore-docker-snapshot.sh --verbose
 
 # Example: Run a Liferay Portal Docker container
 ./run-liferay-portal-docker.sh
@@ -133,14 +133,14 @@ Depending on your selected format:
 
 **Standard format (default):**
 
-- `meta` — text file with backup metadata
+- `meta` — text file with backup metadata (includes `type`, `format`, `db_dump`, `files_archive`, and optionally `name`/`tag.*`)
 - If PostgreSQL: `db-postgresql.sql.gz`
 - If MySQL: `db-mysql.sql.gz`
 - Filesystem archive: `files.tar.gz` (contains `files/`, `scripts/`, `osgi/`, `data/`, `deploy/`)
 
 **Liferay Cloud format:**
 
-- `meta` — includes `format=liferay-cloud`
+- `meta` — includes `format=liferay-cloud`, `db_dump=database.gz`, `files_archive=volume.tgz` (plus `type` and optional `name`/`tag.*`)
 - `database.gz` — plain SQL dump (no owner/privilege statements)
 - `volume.tgz` — tar.gz of the `data/document_library` directory
 
@@ -174,6 +174,17 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--non-interactive` | No prompts; defaults applied | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |
 
+**Notes:**
+
+- The restore script first honors file hints in `meta` (`db_dump` and `files_archive`). If not present, it auto-detects using common filename patterns.
+
+- Use `--verbose` to see a summary of detected candidates and the final files chosen, for example:
+  - `snapshot: type=postgresql format=standard`
+  - `meta hint: db_dump=/path/to/backup/db-postgresql.sql.gz`
+  - `candidate postgres dump: /path/to/backup/db-postgresql.sql.gz`
+  - `using database dump: /path/to/backup/db-postgresql.sql.gz`
+  - `using files archive: /path/to/backup/files.tar.gz`
+
 ---
 
 ### Liferay Cloud Compatibility
@@ -183,6 +194,8 @@ When restoring a Liferay Cloud-format backup:
 - Only `database.gz` and `volume.tgz` are applied.
 - Configuration, OSGi state, and scripts must be restored manually.
 - Cloud backups are only supported for PostgreSQL and MySQL databases.
+
+The `meta` file records `db_dump=database.gz` and `files_archive=volume.tgz` so restores are self-describing.
 
 ---
 
@@ -278,7 +291,11 @@ Backups live under:
 
 ```text
 type=postgresql|mysql|hypersonic
+format=standard|liferay-cloud
 name=Optional friendly name (if provided)
+# Filenames are relative to the checkpoint folder unless absolute
+db_dump=db-postgresql.sql.gz          # or db-mysql.sql.gz, database.gz for liferay-cloud
+files_archive=files.tar.gz            # or volume.tgz for liferay-cloud
 # any number of tags as key/value pairs
 tag.environment=dev
 tag.branch=main

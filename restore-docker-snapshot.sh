@@ -206,7 +206,21 @@ if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   docker stop "$CONTAINER_NAME" >/dev/null 2>&1
 fi
 
-get_first_file() { ls -1 "$1" 2>/dev/null | head -n 1; }
+find_dump() {
+  emulate -L zsh
+  setopt localoptions null_glob extended_glob
+  local dir="$1"; shift
+  local pat
+  for pat in "$@"; do
+    local -a matches
+    matches=($dir/$pat(N))
+    if (( ${#matches} )); then
+      print -r -- ${matches[1]}
+      return 0
+    fi
+  done
+  print -r -- ""
+}
 
 snapshot_type=""
 if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
@@ -214,15 +228,61 @@ if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
   snapshot_type=$(echo "$type_line" | sed -E 's/^type=//')
 fi
 
-postgres_dump=$(get_first_file "$CHECKPOINT_DIR/db-postgresql.sql.*")
-mysql_dump=$(get_first_file "$CHECKPOINT_DIR/db-mysql.sql.*")
-files_archive=$(get_first_file "$CHECKPOINT_DIR/files.tar.*")
-hypers_archive=$(get_first_file "$CHECKPOINT_DIR/filesystem.tar.*")
+# Optional hints from meta: db_dump and files_archive (relative or absolute)
+if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
+  meta_db_dump=$(sed -n 's/^db_dump=//p' "$CHECKPOINT_DIR/meta" | head -n1)
+  meta_files_arc=$(sed -n 's/^files_archive=//p' "$CHECKPOINT_DIR/meta" | head -n1)
+  if [[ -n "$meta_db_dump" ]]; then
+    [[ "$meta_db_dump" = /* ]] || meta_db_dump="$CHECKPOINT_DIR/$meta_db_dump"
+    case "$snapshot_type" in
+      postgresql|postgres|pg)
+        postgres_dump="$meta_db_dump"
+        ;;
+      mysql|mariadb)
+        mysql_dump="$meta_db_dump"
+        ;;
+    esac
+  fi
+  if [[ -n "$meta_files_arc" ]]; then
+    [[ "$meta_files_arc" = /* ]] || meta_files_arc="$CHECKPOINT_DIR/$meta_files_arc"
+    files_archive="$meta_files_arc"
+  fi
+fi
 
-if [[ -z "$snapshot_type" ]]; then
-  if [[ -n "$postgres_dump" ]]; then snapshot_type="postgresql"; 
-  elif [[ -n "$mysql_dump" ]]; then snapshot_type="mysql"; 
-  else snapshot_type="hypersonic"; fi
+postgres_dump=$(find_dump "$CHECKPOINT_DIR" \
+  "db-postgresql.sql.*" \
+  "db-postgres.sql.*" \
+  "postgresql.sql.*" \
+  "postgres.sql.*" \
+  "pg.sql.*" \
+  "database-postgresql.sql.*" \
+  "database-postgres.sql.*" 2>/dev/null)
+
+mysql_dump=$(find_dump "$CHECKPOINT_DIR" \
+  "db-mysql.sql.*" \
+  "mysql.sql.*" \
+  "mariadb.sql.*" \
+  "database-mysql.sql.*" 2>/dev/null)
+
+files_archive=$(find_dump "$CHECKPOINT_DIR" "files.tar.*" 2>/dev/null)
+hypers_archive=$(find_dump "$CHECKPOINT_DIR" "filesystem.tar.*" 2>/dev/null)
+
+# If neither dump was detected by pattern, but there is exactly one SQL dump present, use it as a fallback
+if [[ -z "$postgres_dump$mysql_dump" ]]; then
+  emulate -L zsh
+  setopt localoptions null_glob extended_glob
+  local -a sqls
+  sqls=($CHECKPOINT_DIR/*.sql.*(N))
+  if (( ${#sqls} == 1 )); then
+    case "$snapshot_type" in
+      postgresql|postgres|pg)
+        postgres_dump="${sqls[1]}"
+        ;;
+      mysql|mariadb)
+        mysql_dump="${sqls[1]}"
+        ;;
+    esac
+  fi
 fi
 
 snapshot_format="standard"
@@ -244,6 +304,17 @@ elif [[ "$NON_INTERACTIVE" -ne 1 ]]; then
     standard|liferay-cloud) : ;;
     *) _die "Invalid format: $snapshot_format (expected: standard or liferay-cloud)" ;;
   esac
+fi
+
+# Verbose summary block
+if [[ $VERBOSE -eq 1 ]]; then
+  echo "snapshot: type=$snapshot_type format=$snapshot_format"
+  [[ -n "$meta_db_dump" ]] && echo "meta hint: db_dump=$meta_db_dump"
+  [[ -n "$meta_files_arc" ]] && echo "meta hint: files_archive=$meta_files_arc"
+  [[ -n "$postgres_dump" ]] && echo "candidate postgres dump: $postgres_dump"
+  [[ -n "$mysql_dump" ]] && echo "candidate mysql dump: $mysql_dump"
+  [[ -n "$files_archive" ]] && echo "candidate files archive: $files_archive"
+  [[ -n "$hypers_archive" ]] && echo "candidate hypers archive: $hypers_archive"
 fi
 
 _decompress_cmd() {
@@ -280,7 +351,8 @@ else
     else
       dump_file="$postgres_dump"
     fi
-    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "PostgreSQL dump not found in $CHECKPOINT_DIR"
+    [[ $VERBOSE -eq 1 ]] && echo "using database dump: $dump_file"
+    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "PostgreSQL dump not found in $CHECKPOINT_DIR (looked for db-postgresql.sql.*, db-postgres.sql.*, postgresql.sql.*, postgres.sql.*, pg.sql.*, database-postgresql.sql.*, database-postgres.sql.* or a single *.sql.*)"
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://[^/]+/([^?]+).*#\1#')
     pghost="${PG_HOST_OVERRIDE:-$(echo "$jdbc_url" | sed -E 's#^jdbc:postgresql://([^/:?]+).*$#\1#')}"
     pgport="${PG_PORT_OVERRIDE:-$(echo "$jdbc_url" | sed -nE 's#^jdbc:postgresql://[^/:?]+:([0-9]+).*$#\1#p')}"
@@ -306,7 +378,8 @@ else
     else
       dump_file="$mysql_dump"
     fi
-    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "MySQL dump not found in $CHECKPOINT_DIR"
+    [[ $VERBOSE -eq 1 ]] && echo "using database dump: $dump_file"
+    [[ -z "$dump_file" || ! -f "$dump_file" ]] && _die "MySQL dump not found in $CHECKPOINT_DIR (looked for db-mysql.sql.*, mysql.sql.*, mariadb.sql.*, database-mysql.sql.* or a single *.sql.*)"
     dbname=$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://[^/]+/([^?]+).*#\1#')
     myhost="${MY_HOST_OVERRIDE:-$(echo "$jdbc_url" | sed -E 's#^jdbc:mysql://([^/:?]+).*$#\1#')}"
     myport="${MY_PORT_OVERRIDE:-$(echo "$jdbc_url" | sed -nE 's#^jdbc:mysql://[^/:?]+:([0-9]+).*$#\1#p')}"
@@ -327,13 +400,16 @@ else
   if [[ "$snapshot_format" == "liferay-cloud" ]]; then
     info_custom "${Yellow}Applying Liferay Cloud backup:${Color_Off} database and doclib only. Other files (configs, scripts, OSGi state) are not applied automatically."
     vol="$CHECKPOINT_DIR/volume.tgz"
+    [[ $VERBOSE -eq 1 ]] && echo "using files archive: $vol"
     if [[ -f "$vol" ]]; then
       mkdir -p "$LIFERAY_ROOT/data"
       tar -xzf "$vol" -C "$LIFERAY_ROOT/data"
     fi
   else
-    if files_archive=$(ls -1 "$CHECKPOINT_DIR"/files.tar.* 2>/dev/null | head -n1); then
+    [[ -z "$files_archive" ]] && files_archive=$(find_dump "$CHECKPOINT_DIR" "files.tar.*")
+    if [[ -n "$files_archive" ]]; then
       info "Restoring files archive"
+      [[ $VERBOSE -eq 1 ]] && echo "using files archive: $files_archive"
       _tar_extract "$files_archive" "$LIFERAY_ROOT"
     fi
   fi

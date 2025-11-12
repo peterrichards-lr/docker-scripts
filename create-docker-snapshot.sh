@@ -1,6 +1,5 @@
 #!/bin/zsh
 
-
 Color_Off='\033[0m'
 Green='\033[0;32m'
 Yellow='\033[0;33m'
@@ -219,6 +218,10 @@ dir_name="$timestamp"
 checkpoint_dir="$BACKUPS_DIR/$dir_name"
 mkdir -p "$checkpoint_dir"
 
+# Will be appended to meta once artifacts are created
+_db_meta_value=""
+_files_meta_value=""
+
 if [[ -n "$SNAPSHOT_NAME_ARG" ]]; then
   SNAPSHOT_NAME="$SNAPSHOT_NAME_ARG"
 elif [[ "$NO_SNAPSHOT_NAME" == 1 || "$NON_INTERACTIVE" == 1 ]]; then
@@ -269,6 +272,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
     [[ "$pghost" == "host.docker.internal" ]] && pghost="localhost"
     if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
       dump_file="$checkpoint_dir/database.gz"
+      _db_meta_value="$(basename "$dump_file")"
       info "Dumping PostgreSQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" -F p --no-owner --no-privileges | gzip -c > "$dump_file" 2>/dev/null
@@ -277,6 +281,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
       fi
     else
       dump_file="$checkpoint_dir/db-postgresql.sql$COMPRESS_EXT"
+      _db_meta_value="$(basename "$dump_file")"
       info "Dumping PostgreSQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
@@ -291,6 +296,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
     [[ "$myhost" == "host.docker.internal" ]] && myhost="localhost"
     if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
       dump_file="$checkpoint_dir/database.gz"
+      _db_meta_value="$(basename "$dump_file")"
       info "Dumping MySQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | gzip -c > "$dump_file" 2>/dev/null
@@ -299,6 +305,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
       fi
     else
       dump_file="$checkpoint_dir/db-mysql.sql$COMPRESS_EXT"
+      _db_meta_value="$(basename "$dump_file")"
       info "Dumping MySQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | eval "$COMPRESS_CMD" > "$dump_file" 2>/dev/null
@@ -317,6 +324,7 @@ if [[ $DB_ONLY -eq 0 ]]; then
   if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
     src_dir="$LIFERAY_ROOT/data/document_library"
     archive_file="$checkpoint_dir/volume.tgz"
+    _files_meta_value="$(basename "$archive_file")"
     if [[ -d "$src_dir" ]]; then
       if [[ $QUIET -eq 1 ]]; then
         tar -czf "$archive_file" -C "$LIFERAY_ROOT/data" document_library 2>/dev/null
@@ -327,6 +335,7 @@ if [[ $DB_ONLY -eq 0 ]]; then
   else
     info "Archiving Liferay volumes"
     files_archive="$checkpoint_dir/files.tar${COMPRESS_EXT}"
+    _files_meta_value="$(basename "$files_archive")"
     if [[ -n "$TAR_FLAG" ]]; then
       if [[ $QUIET -eq 1 ]]; then
         tar -c${TAR_FLAG}f "$files_archive" -C "$LIFERAY_ROOT" files scripts osgi data deploy 2>/dev/null
@@ -373,6 +382,12 @@ if [[ $VERIFY -eq 1 ]]; then
     fi
   fi
 fi
+
+# Append artifact filenames to meta (relative names)
+{
+  [[ -n "$_db_meta_value" ]] && printf "db_dump=%s\n" "$_db_meta_value"
+  [[ -n "$_files_meta_value" ]] && printf "files_archive=%s\n" "$_files_meta_value"
+} >> "$checkpoint_dir/meta"
 
 if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   info_custom "${Yellow}Starting ${Green}$CONTAINER_NAME"
