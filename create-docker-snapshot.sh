@@ -128,7 +128,7 @@ while [[ $# -gt 0 ]]; do
       echo "      --compression gzip|xz|none  Compression for dumps and tar. Default: gzip";
       echo "      --prefix <text>           Prefix for backup folder name (results in <prefix>-<timestamp>)";
       echo "      --format standard|liferay-cloud  Backup layout. Default: standard";
-      echo "                                • liferay-cloud: database dump in <backup>/database/dump.sql.gz, and uncompressed doc library copied to <backup>/doclib";
+      echo "                                • liferay-cloud: database.gz (plain SQL, no owner/privileges) and volume.tgz (tar.gz of data/document_library)";
       echo "";
       echo "Behavior and prompts:";
       echo "  -s, --stop / --no-stop       Stop container during backup (and restart afterwards if it was running). Default: stop";
@@ -268,8 +268,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
     pgport="${PG_PORT_OVERRIDE:-5432}"
     [[ "$pghost" == "host.docker.internal" ]] && pghost="localhost"
     if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
-      mkdir -p "$checkpoint_dir/database"
-      dump_file="$checkpoint_dir/database/dump.sql.gz"
+      dump_file="$checkpoint_dir/database.gz"
       info "Dumping PostgreSQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         PGPASSWORD="$jdbc_pass" pg_dump -h "$pghost" -p "$pgport" -U "$jdbc_user" -d "$dbname" -F p --no-owner --no-privileges | gzip -c > "$dump_file" 2>/dev/null
@@ -291,8 +290,7 @@ if [[ $FILES_ONLY -eq 0 ]]; then
     myport="${MY_PORT_OVERRIDE:-3306}"
     [[ "$myhost" == "host.docker.internal" ]] && myhost="localhost"
     if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
-      mkdir -p "$checkpoint_dir/database"
-      dump_file="$checkpoint_dir/database/dump.sql.gz"
+      dump_file="$checkpoint_dir/database.gz"
       info "Dumping MySQL database: $dbname"
       if [[ $QUIET -eq 1 ]]; then
         mysqldump -h "$myhost" -P "$myport" -u "$jdbc_user" -p"$jdbc_pass" --databases "$dbname" | gzip -c > "$dump_file" 2>/dev/null
@@ -318,10 +316,13 @@ fi
 if [[ $DB_ONLY -eq 0 ]]; then
   if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
     src_dir="$LIFERAY_ROOT/data/document_library"
-    dest_dir="$checkpoint_dir/doclib"
-    mkdir -p "$dest_dir"
+    archive_file="$checkpoint_dir/volume.tgz"
     if [[ -d "$src_dir" ]]; then
-      cp -R "$src_dir"/. "$dest_dir"/ 2>/dev/null || true
+      if [[ $QUIET -eq 1 ]]; then
+        tar -czf "$archive_file" -C "$LIFERAY_ROOT/data" document_library 2>/dev/null
+      else
+        tar -czf "$archive_file" -C "$LIFERAY_ROOT/data" document_library 2>/dev/null
+      fi
     fi
   else
     info "Archiving Liferay volumes"
@@ -345,10 +346,14 @@ fi
 if [[ $VERIFY -eq 1 ]]; then
   info "Verifying snapshot integrity"
   if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
-    if [[ -f "$checkpoint_dir/database/dump.sql.gz" ]]; then
-      gzip -t "$checkpoint_dir/database/dump.sql.gz" || _die "Verification failed: database/dump.sql.gz"
+    if [[ -f "$checkpoint_dir/database.gz" ]]; then
+      gzip -t "$checkpoint_dir/database.gz" || _die "Verification failed: database.gz"
     fi
-    [[ -d "$checkpoint_dir/doclib" ]] || _die "Verification failed: doclib folder missing"
+    if [[ -f "$checkpoint_dir/volume.tgz" ]]; then
+      tar -tf "$checkpoint_dir/volume.tgz" >/dev/null || _die "Verification failed: volume.tgz"
+    else
+      _die "Verification failed: volume.tgz missing"
+    fi
   else
     if ls "$checkpoint_dir"/db-*.sql* >/dev/null 2>&1; then
       for f in "$checkpoint_dir"/db-*.sql*; do
@@ -396,4 +401,16 @@ if [[ -n "$SNAPSHOT_NAME" ]]; then
   info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir  ${BYellow}($SNAPSHOT_NAME)"
 else
   info_custom "${Green}Backup created:${Color_Off} $checkpoint_dir"
+fi
+
+if [[ "$BACKUP_FORMAT" == "liferay-cloud" ]]; then
+  up_db="$checkpoint_dir/database.gz"
+  up_vol="$checkpoint_dir/volume.tgz"
+  info_custom "${Yellow}Example Liferay Cloud upload (edit URL and TOKEN):${Color_Off}"
+  echo "curl -X POST \\\""
+  echo "  https://your-project.your-env.lfr.cloud/backup/upload \\\""
+  echo "  -H 'Content-Type: multipart/form-data' \\\""
+  echo "  -H 'dxpcloud-authorization: Bearer TOKEN' \\\""
+  echo "  -F 'database=@$up_db' \\\""
+  echo "  -F 'volume=@$up_vol'"
 fi

@@ -117,7 +117,7 @@ Creates a timestamped snapshot of a **Liferay** environment (database + files), 
 | `--db-only` / `--files-only` | Dump only DB or only filesystem | both |
 | `--compression <gzip\|xz\|none>` | Compression used for DB dumps and tar | `gzip` |
 | `--prefix <text>` | Prefix added to snapshot folder name | none |
-| `--format <standard\|liferay-cloud>` | Backup layout. If `liferay-cloud`, stores only `doclib/` (uncompressed) and `database/dump.sql.gz` with no owner or privilege statements | `standard` |
+| `--format <standard\|liferay-cloud>` | Backup layout. If `liferay-cloud`, emits `database.gz` (plain SQL, no owner/privileges) and `volume.tgz` (tar.gz of `data/document_library`) | `standard` |
 | `--verify` | Validate created archives (gzip/xz integrity, tar list) | off |
 | `--retention <N>` | Keep only newest N backups (older pruned; if `--prefix` is set, pruning applies to that prefix only) | unlimited |
 | `-s, --stop` / `--no-stop` | Stop container during snapshot and restart after if it was running | stop |
@@ -141,14 +141,14 @@ Depending on your selected format:
 **Liferay Cloud format:**
 
 - `meta` — includes `format=liferay-cloud`
-- `database/dump.sql.gz` — plain SQL dump (no owner/privilege statements)
-- `doclib/` — copy of the `data/document_library` directory (uncompressed)
+- `database.gz` — plain SQL dump (no owner/privilege statements)
+- `volume.tgz` — tar.gz of the `data/document_library` directory
 
 ---
 
 ### restore-docker-snapshot.sh
 
-Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Liferay** project root. Supports both standard and Liferay Cloud backups. For Cloud backups, only the `database` and `doclib` content are restored automatically; other files must be applied manually.
+Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Liferay** project root. Supports both standard and Liferay Cloud backups. For Cloud backups, only `database.gz` and `volume.tgz` are restored automatically; other files must be applied manually.
 
 **Usage:**
 
@@ -180,7 +180,7 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 
 When restoring a Liferay Cloud-format backup:
 
-- Only `database/dump.sql.gz` and `doclib/` are applied.
+- Only `database.gz` and `volume.tgz` are applied.
 - Configuration, OSGi state, and scripts must be restored manually.
 - Cloud backups are only supported for PostgreSQL and MySQL databases.
 
@@ -358,3 +358,18 @@ You can enable verbose output for most scripts by passing the `--verbose` flag t
 ```bash
 ./create-docker-snapshot.sh --verbose
 ```
+
+#### Example: Uploading a Liferay Cloud Backup
+
+When using the Liferay Cloud format, you can upload your generated files directly using the DXP Cloud Backup API. Replace the URL and token as appropriate for your environment:
+
+```bash
+curl -X POST \
+  https://your-project.your-env.lfr.cloud/backup/upload \
+  -H 'Content-Type: multipart/form-data' \
+  -H 'dxpcloud-authorization: Bearer TOKEN' \
+  -F 'database=@/path/to/your/backup/database.gz' \
+  -F 'volume=@/path/to/your/backup/volume.tgz'
+```
+
+This matches the output of `create-docker-snapshot.sh` when using `--format liferay-cloud`.

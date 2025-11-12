@@ -230,7 +230,7 @@ if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
   fmt_line=$(sed -n 's/^format=//p' "$CHECKPOINT_DIR/meta" | head -n1)
   [[ -n "$fmt_line" ]] && snapshot_format="$fmt_line"
 fi
-if [[ -d "$CHECKPOINT_DIR/database" || -d "$CHECKPOINT_DIR/doclib" ]]; then
+if [[ -f "$CHECKPOINT_DIR/database.gz" || -f "$CHECKPOINT_DIR/volume.tgz" ]]; then
   snapshot_format="liferay-cloud"
 fi
 if [[ "$snapshot_format" == "liferay-cloud" && "$snapshot_type" == "hypersonic" ]]; then
@@ -276,7 +276,7 @@ else
 
   if echo "$snapshot_type" | grep -qi "postgresql"; then
     if [[ "$snapshot_format" == "liferay-cloud" ]]; then
-      dump_file="$CHECKPOINT_DIR/database/dump.sql.gz"
+      dump_file="$CHECKPOINT_DIR/database.gz"
     else
       dump_file="$postgres_dump"
     fi
@@ -302,7 +302,7 @@ else
     fi
   else
     if [[ "$snapshot_format" == "liferay-cloud" ]]; then
-      dump_file="$CHECKPOINT_DIR/database/dump.sql.gz"
+      dump_file="$CHECKPOINT_DIR/database.gz"
     else
       dump_file="$mysql_dump"
     fi
@@ -326,12 +326,10 @@ else
 
   if [[ "$snapshot_format" == "liferay-cloud" ]]; then
     info_custom "${Yellow}Applying Liferay Cloud backup:${Color_Off} database and doclib only. Other files (configs, scripts, OSGi state) are not applied automatically."
-    src_doclib="$CHECKPOINT_DIR/doclib"
-    dest_doclib="$LIFERAY_ROOT/data/document_library"
-    if [[ -d "$src_doclib" ]]; then
-      mkdir -p "$dest_doclib"
-      rm -rf "$dest_doclib"/* 2>/dev/null
-      cp -R "$src_doclib"/. "$dest_doclib"/ 2>/dev/null
+    vol="$CHECKPOINT_DIR/volume.tgz"
+    if [[ -f "$vol" ]]; then
+      mkdir -p "$LIFERAY_ROOT/data"
+      tar -xzf "$vol" -C "$LIFERAY_ROOT/data"
     fi
   else
     if files_archive=$(ls -1 "$CHECKPOINT_DIR"/files.tar.* 2>/dev/null | head -n1); then
