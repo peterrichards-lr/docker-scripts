@@ -133,14 +133,14 @@ Depending on your selected format:
 
 **Standard format (default):**
 
-- `meta` — text file with backup metadata (includes `type`, `format`, `db_dump`, `files_archive`, and optionally `name`/`tag.*`)
+- `meta` — text file with backup metadata (includes `meta_version`, `type`, `format`, `db_dump`, `files_archive`, and optionally `name`/`tag.*`)
 - If PostgreSQL: `db-postgresql.sql.gz`
 - If MySQL: `db-mysql.sql.gz`
 - Filesystem archive: `files.tar.gz` (contains `files/`, `scripts/`, `osgi/`, `data/`, `deploy/`)
 
 **Liferay Cloud format:**
 
-- `meta` — includes `format=liferay-cloud`, `db_dump=database.gz`, `files_archive=volume.tgz` (plus `type` and optional `name`/`tag.*`)
+- `meta` — includes `meta_version`, `format=liferay-cloud`, `db_dump=database.gz`, `files_archive=volume.tgz` (plus `type` and optional `name`/`tag.*`)
 - `database.gz` — plain SQL dump (no owner/privilege statements)
 - `volume.tgz` — tar.gz of the `data/document_library` directory
 
@@ -171,6 +171,8 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--pg-host/--pg-port` | Override PostgreSQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 5432 |
 | `--my-host/--my-port` | Override MySQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 3306 |
 | `--format <standard\|liferay-cloud>` | Force interpret backup layout; normally auto-detected | auto-detected |
+| `--min-meta-version <N>` | Require at least meta_version N (default 1) | 1 |
+| `--allow-legacy` | Ignore meta_version check (use with caution) | off |
 | `--non-interactive` | No prompts; defaults applied | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |
 
@@ -287,9 +289,12 @@ Backups live under:
     └── files.tar.gz
 ```
 
+The create script writes `meta_version` (currently 2); the restore script enforces a minimum version unless `--allow-legacy` is used.
+
 `meta` contains at least:
 
 ```text
+meta_version=2
 type=postgresql|mysql|hypersonic
 format=standard|liferay-cloud
 name=Optional friendly name (if provided)

@@ -1,4 +1,7 @@
+
 #!/bin/zsh
+set -o pipefail
+SCRIPT_VERSION="2025-11-12"
 
 Color_Off='\033[0m'
 Green='\033[0;32m'
@@ -114,6 +117,8 @@ while [[ $# -gt 0 ]]; do
       STOP_FLAG=1 ;;
     --no-stop)
       NO_STOP_FLAG=1 ;;
+    --version)
+      echo "$0 $SCRIPT_VERSION"; exit 0 ;;
     -h|--help)
       echo "Usage: $0 [options]";
       echo "";
