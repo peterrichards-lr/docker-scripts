@@ -12,8 +12,33 @@ read_config() { if [[ -n $* ]]; then local ANSWER; echo -n -e "${White}$1 [${Gre
 
 read_db_prop() { grep -E "^$1=" "$FILES_VOLUME/portal-ext.properties" | sed -e "s/^$1=//"; }
 
-default_root="$(pwd)"
-read_config "Liferay Root" LIFERAY_ROOT "$default_root"
+LIFERAY_ROOT_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--root)
+      shift
+      if [[ -z "$1" ]]; then
+        echo "Error: --root requires a path"
+        exit 1
+      fi
+      LIFERAY_ROOT_ARG="$1"
+      ;;
+    -h|--help)
+      echo "Usage: $0 [-r|--root PATH]"
+      exit 0
+      ;;
+    *)
+      ;;
+  esac
+  shift
+done
+
+if [[ -n "$LIFERAY_ROOT_ARG" ]]; then
+  LIFERAY_ROOT="$LIFERAY_ROOT_ARG"
+else
+  default_root="$(pwd)"
+  read_config "Liferay Root" LIFERAY_ROOT "$default_root"
+fi
 [[ ! "$LIFERAY_ROOT" =~ ^(\.\/|\/).+$ ]] && LIFERAY_ROOT="./$LIFERAY_ROOT"
 
 DEPLOY_VOLUME="$LIFERAY_ROOT/deploy"
