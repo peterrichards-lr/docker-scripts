@@ -171,7 +171,7 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--pg-host/--pg-port` | Override PostgreSQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 5432 |
 | `--my-host/--my-port` | Override MySQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 3306 |
 | `--format <standard\|liferay-cloud>` | Force interpret backup layout; normally auto-detected | auto-detected |
-| `--min-meta-version <N>` | Require at least meta_version N (default 1) | 1 |
+| `--min-meta-version <N>` | Require at least meta_version N (default 2) | 2 |
 | `--allow-legacy` | Ignore meta_version check (use with caution) | off |
 | `--non-interactive` | No prompts; defaults applied | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |

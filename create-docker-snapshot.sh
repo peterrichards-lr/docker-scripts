@@ -1,7 +1,8 @@
-
 #!/bin/zsh
+
 set -o pipefail
 SCRIPT_VERSION="2025-11-12"
+META_VERSION="2"
 
 Color_Off='\033[0m'
 Green='\033[0;32m'
@@ -98,7 +99,7 @@ while [[ $# -gt 0 ]]; do
       shift; [[ -z "$1" || "$1" != *"="* ]] && _die "--tag requires key=value"
       TAGS+="$1" ;;
     --retention)
-      shift; [[ -z "$1" || "$1" != <-> ]] && _die "--retention requires an integer"
+      shift; [[ -z "$1" || ! "$1" =~ '^[0-9]+$' ]] && _die "--retention requires an integer"
       RETENTION_N="$1" ;;
     --format)
       shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"
@@ -223,7 +224,6 @@ dir_name="$timestamp"
 checkpoint_dir="$BACKUPS_DIR/$dir_name"
 mkdir -p "$checkpoint_dir"
 
-# Will be appended to meta once artifacts are created
 _db_meta_value=""
 _files_meta_value=""
 
@@ -260,6 +260,7 @@ if [[ "$BACKUP_FORMAT" == "liferay-cloud" && "$snap_type" == "hypersonic" ]]; th
 fi
 
 {
+  printf "meta_version=%s\n" "$META_VERSION"
   printf "type=%s\n" "$snap_type"
   printf "format=%s\n" "$BACKUP_FORMAT"
   [[ -n "$SNAPSHOT_NAME" ]] && printf "name=%s\n" "$SNAPSHOT_NAME"
@@ -388,7 +389,6 @@ if [[ $VERIFY -eq 1 ]]; then
   fi
 fi
 
-# Append artifact filenames to meta (relative names)
 {
   [[ -n "$_db_meta_value" ]] && printf "db_dump=%s\n" "$_db_meta_value"
   [[ -n "$_files_meta_value" ]] && printf "files_archive=%s\n" "$_files_meta_value"

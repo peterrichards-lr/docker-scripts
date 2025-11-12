@@ -1,7 +1,10 @@
-
 #!/bin/zsh
+
 set -o pipefail
+
 SCRIPT_VERSION="2025-11-12"
+MIN_META_VERSION=2
+ALLOW_LEGACY=0
 
 Color_Off='\033[0m'
 Green='\033[0;32m'
@@ -59,7 +62,7 @@ while [[ $# -gt 0 ]]; do
     --non-interactive)
       NON_INTERACTIVE=1 ;;
     -i|--index)
-      shift; [[ -z "$1" || "$1" != <-> ]] && _die "--index requires a numeric value"; INDEX_ARG="$1" ;;
+      shift; [[ -z "$1" || ! "$1" =~ '^[0-9]+$' ]] && _die "--index requires a numeric value"; INDEX_ARG="$1" ;;
     --checkpoint)
       shift; [[ -z "$1" ]] && _die "--checkpoint requires a folder name"; CHECKPOINT_ARG="$1" ;;
     --no-list)
@@ -82,6 +85,10 @@ while [[ $# -gt 0 ]]; do
       KEEP_CHECKPOINT_FLAG=1 ;;
     --format)
       shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"; case "$1" in standard|liferay-cloud) FORMAT_OVERRIDE="$1" ;; *) _die "--format must be standard|liferay-cloud";; esac ;;
+    --min-meta-version)
+      shift; [[ -z "$1" || "$1" != <-> ]] && _die "--min-meta-version requires an integer"; MIN_META_VERSION="$1" ;;
+    --allow-legacy)
+      ALLOW_LEGACY=1 ;;
     --quiet)
       QUIET=1 ;;
     --verbose)
@@ -112,6 +119,9 @@ while [[ $# -gt 0 ]]; do
       echo "                                • checkpoint is kept by default (unless --delete-after is provided)";
       echo "                                • backup list is not shown";
       echo "      --format <standard|liferay-cloud>  Override auto-detected backup layout. Default: auto-detect";
+      echo "";
+      echo "      --min-meta-version <N>    Require meta_version >= N in backup meta (default: 2)";
+      echo "      --allow-legacy            Allow restoring backups with meta_version < min supported";
       echo "";
       echo "Database connection overrides (if restoring DB):";
       echo "      --pg-host/--pg-port       Override PostgreSQL host/port. Defaults: parsed from JDBC URL; host.docker.internal -> localhost; port 5432 if missing";
@@ -229,11 +239,15 @@ find_dump() {
 
 snapshot_type=""
 if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
-  type_line=$(head -n1 "$CHECKPOINT_DIR/meta")
-  snapshot_type=$(echo "$type_line" | sed -E 's/^type=//')
+  snapshot_type=$(sed -n 's/^type=//p' "$CHECKPOINT_DIR/meta" | head -n1)
 fi
 
-# Optional hints from meta: db_dump and files_archive (relative or absolute)
+meta_version=1
+if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
+  mv_line=$(sed -n 's/^meta_version=//p' "$CHECKPOINT_DIR/meta" | head -n1)
+  [[ -n "$mv_line" ]] && meta_version="$mv_line"
+fi
+
 if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
   meta_db_dump=$(sed -n 's/^db_dump=//p' "$CHECKPOINT_DIR/meta" | head -n1)
   meta_files_arc=$(sed -n 's/^files_archive=//p' "$CHECKPOINT_DIR/meta" | head -n1)
@@ -272,7 +286,6 @@ mysql_dump=$(find_dump "$CHECKPOINT_DIR" \
 files_archive=$(find_dump "$CHECKPOINT_DIR" "files.tar.*" 2>/dev/null)
 hypers_archive=$(find_dump "$CHECKPOINT_DIR" "filesystem.tar.*" 2>/dev/null)
 
-# If neither dump was detected by pattern, but there is exactly one SQL dump present, use it as a fallback
 if [[ -z "$postgres_dump$mysql_dump" ]]; then
   emulate -L zsh
   setopt localoptions null_glob extended_glob
@@ -290,20 +303,25 @@ if [[ -z "$postgres_dump$mysql_dump" ]]; then
   fi
 fi
 
+FORMAT_INFERRED=0
 snapshot_format="standard"
 if [[ -f "$CHECKPOINT_DIR/meta" ]]; then
   fmt_line=$(sed -n 's/^format=//p' "$CHECKPOINT_DIR/meta" | head -n1)
-  [[ -n "$fmt_line" ]] && snapshot_format="$fmt_line"
+  if [[ -n "$fmt_line" ]]; then
+    snapshot_format="$fmt_line"
+    FORMAT_INFERRED=1
+  fi
 fi
 if [[ -f "$CHECKPOINT_DIR/database.gz" || -f "$CHECKPOINT_DIR/volume.tgz" ]]; then
   snapshot_format="liferay-cloud"
+  FORMAT_INFERRED=1
 fi
 if [[ "$snapshot_format" == "liferay-cloud" && "$snapshot_type" == "hypersonic" ]]; then
   _die "Liferay Cloud backups require PostgreSQL or MySQL; Hypersonic is not supported"
 fi
 if [[ -n "$FORMAT_OVERRIDE" ]]; then
   snapshot_format="$FORMAT_OVERRIDE"
-elif [[ "$NON_INTERACTIVE" -ne 1 ]]; then
+elif [[ "$NON_INTERACTIVE" -ne 1 && "$FORMAT_INFERRED" -eq 0 ]]; then
   read_config "Backup format (standard|liferay-cloud)" snapshot_format "$snapshot_format"
   case "$snapshot_format" in
     standard|liferay-cloud) : ;;
@@ -311,8 +329,8 @@ elif [[ "$NON_INTERACTIVE" -ne 1 ]]; then
   esac
 fi
 
-# Verbose summary block
 if [[ $VERBOSE -eq 1 ]]; then
+  echo "meta_version: $meta_version (min_supported=$MIN_META_VERSION, allow_legacy=$ALLOW_LEGACY)"
   echo "snapshot: type=$snapshot_type format=$snapshot_format"
   [[ -n "$meta_db_dump" ]] && echo "meta hint: db_dump=$meta_db_dump"
   [[ -n "$meta_files_arc" ]] && echo "meta hint: files_archive=$meta_files_arc"
@@ -320,6 +338,10 @@ if [[ $VERBOSE -eq 1 ]]; then
   [[ -n "$mysql_dump" ]] && echo "candidate mysql dump: $mysql_dump"
   [[ -n "$files_archive" ]] && echo "candidate files archive: $files_archive"
   [[ -n "$hypers_archive" ]] && echo "candidate hypers archive: $hypers_archive"
+fi
+
+if (( meta_version < MIN_META_VERSION )) && [[ "$ALLOW_LEGACY" -ne 1 ]]; then
+  _die "Backup meta_version=$meta_version is older than the minimum supported ($MIN_META_VERSION). Re-create the snapshot with the updated create script, or re-run with --allow-legacy to bypass this check."
 fi
 
 _decompress_cmd() {
