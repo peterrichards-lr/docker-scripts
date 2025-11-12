@@ -49,6 +49,7 @@ MY_PORT_OVERRIDE=""
 RETENTION_N=""
 TAGS=()
 BACKUP_FORMAT="standard"
+FORMAT_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -98,9 +99,13 @@ while [[ $# -gt 0 ]]; do
       shift; [[ -z "$1" || "$1" != <-> ]] && _die "--retention requires an integer"
       RETENTION_N="$1" ;;
     --format)
-      shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"; case "$1" in standard|liferay-cloud) BACKUP_FORMAT="$1" ;; *) _die "--format must be standard|liferay-cloud";; esac ;;
+      shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"
+      case "$1" in
+        standard|liferay-cloud) BACKUP_FORMAT="$1"; FORMAT_SET=1 ;;
+        *) _die "--format must be standard|liferay-cloud" ;;
+      esac ;;
     --cloud)
-      BACKUP_FORMAT="liferay-cloud" ;;
+      BACKUP_FORMAT="liferay-cloud"; FORMAT_SET=1 ;;
     -n|--name)
       shift; [[ -z "$1" ]] && _die "--name requires a value"
       SNAPSHOT_NAME_ARG="$1" ;;
@@ -151,6 +156,17 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ -z "$BACKUP_FORMAT" ]]; then
+  BACKUP_FORMAT="standard"
+fi
+if [[ "$NON_INTERACTIVE" -ne 1 && "$FORMAT_SET" -ne 1 ]]; then
+  read_config "Backup format (standard|liferay-cloud)" BACKUP_FORMAT "${BACKUP_FORMAT}"
+  case "$BACKUP_FORMAT" in
+    standard|liferay-cloud) : ;;
+    *) _die "Invalid format: $BACKUP_FORMAT (expected: standard or liferay-cloud)" ;;
+  esac
+fi
 
 [[ $VERBOSE -eq 1 ]] && set -x
 

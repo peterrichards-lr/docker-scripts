@@ -43,6 +43,7 @@ MY_HOST_OVERRIDE=""
 MY_PORT_OVERRIDE=""
 DELETE_AFTER_FLAG=""
 KEEP_CHECKPOINT_FLAG=""
+FORMAT_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +77,8 @@ while [[ $# -gt 0 ]]; do
       DELETE_AFTER_FLAG=1 ;;
     --keep-checkpoint)
       KEEP_CHECKPOINT_FLAG=1 ;;
+    --format)
+      shift; [[ -z "$1" ]] && _die "--format requires standard|liferay-cloud"; case "$1" in standard|liferay-cloud) FORMAT_OVERRIDE="$1" ;; *) _die "--format must be standard|liferay-cloud";; esac ;;
     --quiet)
       QUIET=1 ;;
     --verbose)
@@ -103,6 +106,7 @@ while [[ $# -gt 0 ]]; do
       echo "                                • container is stopped by default (unless --no-stop is provided)";
       echo "                                • checkpoint is kept by default (unless --delete-after is provided)";
       echo "                                • backup list is not shown";
+      echo "      --format <standard|liferay-cloud>  Override auto-detected backup layout. Default: auto-detect";
       echo "";
       echo "Database connection overrides (if restoring DB):";
       echo "      --pg-host/--pg-port       Override PostgreSQL host/port. Defaults: parsed from JDBC URL; host.docker.internal -> localhost; port 5432 if missing";
@@ -231,6 +235,15 @@ if [[ -d "$CHECKPOINT_DIR/database" || -d "$CHECKPOINT_DIR/doclib" ]]; then
 fi
 if [[ "$snapshot_format" == "liferay-cloud" && "$snapshot_type" == "hypersonic" ]]; then
   _die "Liferay Cloud backups require PostgreSQL or MySQL; Hypersonic is not supported"
+fi
+if [[ -n "$FORMAT_OVERRIDE" ]]; then
+  snapshot_format="$FORMAT_OVERRIDE"
+elif [[ "$NON_INTERACTIVE" -ne 1 ]]; then
+  read_config "Backup format (standard|liferay-cloud)" snapshot_format "$snapshot_format"
+  case "$snapshot_format" in
+    standard|liferay-cloud) : ;;
+    *) _die "Invalid format: $snapshot_format (expected: standard or liferay-cloud)" ;;
+  esac
 fi
 
 _decompress_cmd() {

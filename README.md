@@ -14,6 +14,56 @@ The snapshot scripts in this repo are designed to work **together** with the run
 
 ---
 
+## Liferay Developer License Setup
+
+If you have a Liferay **XML development license**, you can add it once and have it automatically applied to all newly created Liferay containers.
+
+Place your XML license file in the following directory:
+
+```text
+7.4-common/deploy
+```
+
+When you run `run-liferay-portal-docker.sh` or `run-liferay-dxp-docker.sh`, the scripts detect the license and automatically copy it into the container during setup.
+
+You can also add configuration files (for example `portal-ext.properties`, `system-ext.properties`, or other `.properties` files) to the same directory. These will be copied to the container as well, allowing your preferred default configuration to be applied to **all newly created Liferay containers**.
+
+This means you can maintain a consistent developer setup, with both your license and configuration automatically provisioned whenever you create a new environment.
+
+---
+
+## Liferay Home Folder Mapping & Purpose
+
+For background on the standard layout, see Liferay’s docs on **Liferay Home**:
+
+- <https://learn.liferay.com/w/dxp/self-hosted-installation-and-upgrades/reference/liferay-home>
+
+Our scripts create a project root that mirrors Liferay Home and bind‑mount these folders into the container:
+
+```text
+Host folder                              → Container path
+---------------------------------------------------------------------------------
+<root>/data                              → /opt/liferay/data
+<root>/deploy                            → /mnt/liferay/deploy
+<root>/files                             → /mnt/liferay/files
+<root>/osgi/configs                      → /opt/liferay/osgi/configs
+<root>/osgi/state                        → /opt/liferay/osgi/state
+<root>/osgi/client-extensions            → /opt/liferay/osgi/client-extensions
+<root>/scripts                           → /mnt/liferay/scripts
+<root>/backups                           → (host-only; snapshots live here)
+```
+
+What each folder is for:
+
+- **data/**: Persistent Liferay data (file repository, indexes). For Hypersonic (dev only), embedded DB files live here. In Liferay Cloud format backups we copy only `data/document_library` as `doclib/`.
+- **deploy/**: Auto‑deploy drop‑in; JAR/WAR/LPKG placed here are deployed automatically by the running server.
+- **files/**: Host‑side overlay for config/licensing and other one‑off assets copied in at startup (e.g., `portal-ext.properties`, license XML). Useful for bootstrapping new environments.
+- **osgi/configs**: OSGi component configurations persisted on the host and applied on startup.
+- **osgi/state**: Runtime state cache for installed bundles; persisting this speeds up restarts.
+- **osgi/client-extensions**: Dedicated location for **zip‑deployable Client Extensions** so you can mount them once and have them available in the container.
+- **scripts/**: Optional helper scripts mounted into the container.
+- **backups/**: Host‑side snapshots created by `create-docker-snapshot.sh`.
+
 ## Quick Start
 
 To get started quickly, clone the repository and run any of the scripts directly:
@@ -65,9 +115,9 @@ Creates a timestamped snapshot of a **Liferay** environment (database + files), 
 | `-n, --name <text>` | Optional snapshot name stored in `meta` | none |
 | `--no-name` | Skip name prompt and store no name | prompt in interactive mode |
 | `--db-only` / `--files-only` | Dump only DB or only filesystem | both |
-| `--compression gzip|xz|none` | Compression used for DB dumps and tar | `gzip` |
+| `--compression <gzip\|xz\|none>` | Compression used for DB dumps and tar | `gzip` |
 | `--prefix <text>` | Prefix added to snapshot folder name | none |
-| `--format standard|liferay-cloud` | Backup layout. If `liferay-cloud`, stores only `doclib/` (uncompressed) and `database/dump.sql.gz` with no owner or privilege statements | `standard` |
+| `--format <standard\|liferay-cloud>` | Backup layout. If `liferay-cloud`, stores only `doclib/` (uncompressed) and `database/dump.sql.gz` with no owner or privilege statements | `standard` |
 | `--verify` | Validate created archives (gzip/xz integrity, tar list) | off |
 | `--retention <N>` | Keep only newest N backups (older pruned; if `--prefix` is set, pruning applies to that prefix only) | unlimited |
 | `-s, --stop` / `--no-stop` | Stop container during snapshot and restart after if it was running | stop |
@@ -77,17 +127,19 @@ Creates a timestamped snapshot of a **Liferay** environment (database + files), 
 | `--non-interactive` | No prompts; apply defaults and flags | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |
 
-**What gets created**
+#### What gets created
 
 Depending on your selected format:
 
 **Standard format (default):**
+
 - `meta` — text file with backup metadata
 - If PostgreSQL: `db-postgresql.sql.gz`
 - If MySQL: `db-mysql.sql.gz`
 - Filesystem archive: `files.tar.gz` (contains `files/`, `scripts/`, `osgi/`, `data/`, `deploy/`)
 
 **Liferay Cloud format:**
+
 - `meta` — includes `format=liferay-cloud`
 - `database/dump.sql.gz` — plain SQL dump (no owner/privilege statements)
 - `doclib/` — copy of the `data/document_library` directory (uncompressed)
@@ -118,7 +170,7 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--delete-after` / `--keep-checkpoint` | Delete checkpoint after successful restore or keep it | keep |
 | `--pg-host/--pg-port` | Override PostgreSQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 5432 |
 | `--my-host/--my-port` | Override MySQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 3306 |
-| `--format standard|liferay-cloud` | Force interpret backup layout; normally auto-detected | auto-detected |
+| `--format <standard\|liferay-cloud>` | Force interpret backup layout; normally auto-detected | auto-detected |
 | `--non-interactive` | No prompts; defaults applied | off |
 | `--quiet` / `--verbose` | Adjust logging verbosity | normal |
 
@@ -127,6 +179,7 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 ### Liferay Cloud Compatibility
 
 When restoring a Liferay Cloud-format backup:
+
 - Only `database/dump.sql.gz` and `doclib/` are applied.
 - Configuration, OSGi state, and scripts must be restored manually.
 - Cloud backups are only supported for PostgreSQL and MySQL databases.
@@ -151,7 +204,7 @@ Runs a Liferay Portal Docker container with default or specified options.
 | `-r, --root <path>` | Project root where volumes/configs are created | `./<tag>` if non-interactive, otherwise prompted |
 | `-c, --container <name>` | Container name | derived from basename of `<root>` |
 | `-p, --port <port>` | Host port to map to 8080 in the container | `8080` |
-| `--db postgresql|mysql|hypersonic` | Choose database | prompted (hypersonic in non-interactive if not set) |
+| `--db <postgresql\|mysql\|hypersonic>` | Choose database | prompted (hypersonic in non-interactive if not set) |
 | `--jdbc-username <user>` | DB username (external DB) | prompted |
 | `--jdbc-password <pass>` | DB password (external DB) | prompted |
 | `--recreate-db` | Drop and recreate DB if it exists | off |
@@ -182,7 +235,7 @@ Runs a Liferay DXP Docker container with default or specified options.
 | `-r, --root <path>` | Project root where volumes/configs are created | `./<tag>` if non-interactive, otherwise prompted |
 | `-c, --container <name>` | Container name | derived from basename of `<root>` |
 | `-p, --port <port>` | Host port to map to 8080 in the container | `8080` |
-| `--db postgresql|mysql|hypersonic` | Choose database | prompted (hypersonic in non-interactive if not set) |
+| `--db <postgresql\|mysql\|hypersonic>` | Choose database | prompted (hypersonic in non-interactive if not set) |
 | `--jdbc-username <user>` | DB username (external DB) | prompted |
 | `--jdbc-password <pass>` | DB password (external DB) | prompted |
 | `--recreate-db` | Drop and recreate DB if it exists | off |
@@ -213,7 +266,7 @@ When used outside of the Liferay project layout produced by the run scripts, pas
 
 Backups live under:
 
-```
+```text
 <root>/backups/
 └── [prefix-]YYYYMMDD-HHMMSS/
     ├── meta
@@ -223,7 +276,7 @@ Backups live under:
 
 `meta` contains at least:
 
-```
+```text
 type=postgresql|mysql|hypersonic
 name=Optional friendly name (if provided)
 # any number of tags as key/value pairs
@@ -252,42 +305,56 @@ Thank you for using Docker Scripts! Feel free to contribute or report issues on 
 ## 🧯 Troubleshooting
 
 ### Docker socket permission errors
+
 If you encounter errors like `Cannot connect to the Docker daemon`, ensure that Docker Desktop is running and your user has permission to access the Docker socket. On macOS, this is usually fixed by restarting Docker Desktop.
 
 ### Command not found
+
 If running any script results in `command not found`, ensure you’ve given execute permissions to the files:
+
 ```bash
 chmod +x *.sh
 ```
 
 ### Database authentication issues
+
 If a PostgreSQL or MySQL connection fails during backup or restore, verify the credentials and connection details. You can test manually with:
+
 ```bash
 psql -h localhost -U youruser -d yourdb
 mysql -h localhost -u youruser -p yourdb
 ```
 
 ### Missing dependencies
+
 If you see errors about missing `jq`, `curl`, or `psql`, install them using:
+
 ```bash
 brew install jq coreutils postgresql mysql
 ```
 
 ### macOS date incompatibility
+
 If you encounter errors involving `date` or timestamps, install GNU coreutils:
+
 ```bash
 brew install coreutils
 ```
+
 and use `gdate` instead of `date` where required.
 
 ### Docker volume permission issues
+
 If you receive permission errors while creating or restoring volumes, run the script with elevated privileges or adjust ownership using:
+
 ```bash
 sudo chown -R $(whoami) ./data ./backups
 ```
 
 ### General debugging
+
 You can enable verbose output for most scripts by passing the `--verbose` flag to see expanded command details.
+
 ```bash
 ./create-docker-snapshot.sh --verbose
 ```
