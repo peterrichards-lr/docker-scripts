@@ -168,6 +168,8 @@ Restores a snapshot created by `create-docker-snapshot.sh` into a matching **Lif
 | `--no-list` | Suppress listing of backups | listed in interactive; suppressed in non-interactive |
 | `-s, --stop` / `--no-stop` | Stop container during restore and restart after if it was running | stop |
 | `--delete-after` / `--keep-checkpoint` | Delete checkpoint after successful restore or keep it | keep |
+| `--delete-state` | Delete OSGi state folder before restore | off |
+| `--delete-elasticsearch` | Delete Elasticsearch data folder (data/elasticsearch7) before restore | off |
 | `--pg-host/--pg-port` | Override PostgreSQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 5432 |
 | `--my-host/--my-port` | Override MySQL host/port when restoring DB | parsed from JDBC, host.docker.internal→localhost, port 3306 |
 | `--format <standard\|liferay-cloud>` | Force interpret backup layout; normally auto-detected | auto-detected |

@@ -43,6 +43,8 @@ CHECKPOINT_ARG=""
 NO_LIST=0
 STOP_FLAG=""
 NO_STOP_FLAG=""
+DELETE_STATE_FLAG=""
+DELETE_ES_FLAG=""
 PG_HOST_OVERRIDE=""
 PG_PORT_OVERRIDE=""
 MY_HOST_OVERRIDE=""
@@ -71,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       STOP_FLAG=1 ;;
     --no-stop)
       NO_STOP_FLAG=1 ;;
+    --delete-state)
+      DELETE_STATE_FLAG=1 ;;
+    --delete-elasticsearch)
+      DELETE_ES_FLAG=1 ;;
     --pg-host)
       shift; [[ -z "$1" ]] && _die "--pg-host requires a value"; PG_HOST_OVERRIDE="$1" ;;
     --pg-port)
@@ -112,6 +118,8 @@ while [[ $# -gt 0 ]]; do
       echo "  -s, --stop / --no-stop       Stop container during restore (and restart afterwards if it was running). Default: stop";
       echo "      --delete-after            Delete checkpoint after successful restore";
       echo "      --keep-checkpoint         Keep checkpoint after restore. Default: keep";
+      echo "      --delete-state            Delete OSGi state folder before restore";
+      echo "      --delete-elasticsearch    Delete Elasticsearch data folder (data/elasticsearch7) before restore";
       echo "      --non-interactive         Do not prompt; use defaults. In this mode:";
       echo "                                • root defaults to current directory";
       echo "                                • backup selection defaults to newest backup unless --index/--checkpoint is provided";
@@ -134,6 +142,10 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "$NON_INTERACTIVE" -eq 1 && -n "$DELETE_STATE_FLAG$DELETE_ES_FLAG" && -z "$STOP_FLAG" ]]; then
+  _die "--delete-state/--delete-elasticsearch require -s or --stop in non-interactive mode"
+fi
 
 [[ $VERBOSE -eq 1 ]] && set -x
 
@@ -216,9 +228,51 @@ else
   read_config "Stop container during restore" STOP_CONTAINER "$STOP_CONTAINER_DEFAULT"
 fi
 
+if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+  if [[ -z "$DELETE_STATE_FLAG" ]]; then
+    DELETE_STATE_FLAG=1
+  fi
+  if [[ -z "$DELETE_ES_FLAG" ]]; then
+    DELETE_ES_FLAG=1
+  fi
+fi
+
 if [[ "${STOP_CONTAINER:u}" == "Y" && "$container_running" == "Y" ]]; then
   info_custom "${Yellow}Stopping ${Green}$CONTAINER_NAME"
   docker stop "$CONTAINER_NAME" >/dev/null 2>&1
+fi
+
+if [[ "$NON_INTERACTIVE" -eq 1 && "${STOP_CONTAINER:u}" == "Y" && -n "$DELETE_STATE_FLAG" ]]; then
+  if [[ -d "$STATE_VOLUME" ]]; then
+    info_custom "${Yellow}Deleting OSGi state folder:${Color_Off} $STATE_VOLUME"
+    rm -rf "$STATE_VOLUME"
+  fi
+fi
+
+if [[ "$NON_INTERACTIVE" -eq 1 && "${STOP_CONTAINER:u}" == "Y" && -n "$DELETE_ES_FLAG" ]]; then
+  es_dir="$DATA_VOLUME/elasticsearch7"
+  if [[ -d "$es_dir" ]]; then
+    info_custom "${Yellow}Deleting Elasticsearch data folder:${Color_Off} $es_dir"
+    rm -rf "$es_dir"
+  fi
+fi
+
+if [[ "$NON_INTERACTIVE" -ne 1 && "${STOP_CONTAINER:u}" == "Y" ]]; then
+  read_config "Delete OSGi state" DELETE_STATE_CHOICE "Y"
+  if [[ "${DELETE_STATE_CHOICE:u}" == "Y" ]]; then
+    if [[ -d "$STATE_VOLUME" ]]; then
+      info_custom "${Yellow}Deleting OSGi state folder:${Color_Off} $STATE_VOLUME"
+      rm -rf "$STATE_VOLUME"
+    fi
+  fi
+  read_config "Delete Elasticsearch" DELETE_ES_CHOICE "Y"
+  if [[ "${DELETE_ES_CHOICE:u}" == "Y" ]]; then
+    es_dir="$DATA_VOLUME/elasticsearch7"
+    if [[ -d "$es_dir" ]]; then
+      info_custom "${Yellow}Deleting Elasticsearch data folder:${Color_Off} $es_dir"
+      rm -rf "$es_dir"
+    fi
+  fi
 fi
 
 find_dump() {
